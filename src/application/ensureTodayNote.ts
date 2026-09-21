@@ -92,7 +92,47 @@ export const ensureTodayNote = async (
     const hasPluginContent = PAGE_COMPONENT_IDS.some(componentId =>
       markers.value.has(componentId),
     );
-    if (!hasPluginContent || hasAllIds(markers.value)) {
+    if (!hasPluginContent) {
+      const inspection = await dependencies.device.inspectNotePage(notePath);
+      if (!inspection.ok) {
+        return err(fromDevice('inspect-page', inspection.error));
+      }
+
+      if (inspection.value.pageZeroElementCount > 0) {
+        const handedOff = await dependencies.device.handoffExistingNote(
+          notePath,
+        );
+        return handedOff.ok
+          ? ok({kind: 'opened-existing', date: descriptor.date, notePath})
+          : err(fromDevice('handoff', handedOff.error));
+      }
+
+      const repairedBlank = await dependencies.device.renderMissingPageComponents(
+        {
+          notePath,
+          date: descriptor.date,
+          fullDate: descriptor.fullDate,
+          lesson,
+        },
+        new Set(PAGE_COMPONENT_IDS),
+        inspection.value.pageCount === 1,
+      );
+      if (!repairedBlank.ok) {
+        return err(fromDevice('render-page', repairedBlank.error));
+      }
+
+      const handedOff = await dependencies.device.handoffGeneratedNote(notePath);
+      return handedOff.ok
+        ? ok({
+            kind: 'generated',
+            date: descriptor.date,
+            notePath,
+            exerciseId: lesson.id,
+          })
+        : err(fromDevice('handoff', handedOff.error));
+    }
+
+    if (hasAllIds(markers.value)) {
       const handedOff = await dependencies.device.handoffExistingNote(notePath);
       return handedOff.ok
         ? ok({kind: 'opened-existing', date: descriptor.date, notePath})
@@ -107,6 +147,7 @@ export const ensureTodayNote = async (
         lesson,
       },
       missingIds(markers.value),
+      false,
     );
     if (!repaired.ok) {
       return err(fromDevice('render-page', repaired.error));
@@ -143,6 +184,7 @@ export const ensureTodayNote = async (
       lesson,
     },
     new Set(PAGE_COMPONENT_IDS),
+    true,
   );
   if (!rendered.ok) {
     return err(fromDevice('render-page', rendered.error));

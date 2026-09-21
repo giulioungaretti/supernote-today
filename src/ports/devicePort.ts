@@ -41,6 +41,11 @@ export interface DeviceDiagnostics {
   readonly deviceName: string;
 }
 
+export interface NotePageInspection {
+  readonly pageCount: number;
+  readonly pageZeroElementCount: number;
+}
+
 export interface DevicePort {
   readonly ensureFileAccess: () => Promise<Result<void, DeviceFailure>>;
   readonly ensureNoteDirectory: (
@@ -56,9 +61,13 @@ export interface DevicePort {
     notePath: string,
     date: LocalDate,
   ) => Promise<Result<ReadonlySet<string>, DeviceFailure>>;
+  readonly inspectNotePage: (
+    notePath: string,
+  ) => Promise<Result<NotePageInspection, DeviceFailure>>;
   readonly renderMissingPageComponents: (
     content: TodayPageContent,
     missingComponentIds: ReadonlySet<string>,
+    insertGeneratedPage: boolean,
   ) => Promise<Result<void, DeviceFailure>>;
   readonly handoffGeneratedNote: (
     notePath: string,

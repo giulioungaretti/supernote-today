@@ -10,6 +10,7 @@ import type {
   DeviceDiagnostics,
   DeviceFailure,
   DevicePort,
+  NotePageInspection,
 } from '../../ports/devicePort';
 import {ensureFileAccess} from './permissions';
 import {
@@ -180,6 +181,47 @@ const noteExists = async (
   }
 };
 
+const isNonNegativeInteger = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value >= 0;
+
+const inspectNotePage = async (
+  notePath: string,
+): Promise<Result<NotePageInspection, DeviceFailure>> => {
+  try {
+    const pageCount = readSdkResult(
+      'getNoteTotalPageNum',
+      await PluginFileAPI.getNoteTotalPageNum(notePath),
+      isNonNegativeInteger,
+    );
+    if (!pageCount.ok) {
+      return err(toDeviceFailure('read-elements', pageCount.error));
+    }
+
+    const elementCount = readSdkResult(
+      'getElementCounts',
+      await PluginFileAPI.getElementCounts(notePath, 0),
+      isNonNegativeInteger,
+    );
+    if (!elementCount.ok) {
+      return err(toDeviceFailure('read-elements', elementCount.error));
+    }
+
+    return ok({
+      pageCount: pageCount.value,
+      pageZeroElementCount: elementCount.value,
+    });
+  } catch (error: unknown) {
+    return err(
+      toDeviceFailure(
+        'read-elements',
+        sdkException('inspectNotePage', error),
+      ),
+    );
+  }
+};
+
 const closePluginView = async (): Promise<Result<void, DeviceFailure>> => {
   try {
     return (await PluginManager.closePluginView())
@@ -332,6 +374,7 @@ export const supernoteDeviceAdapter: DevicePort = {
   noteExists,
   createNote,
   readGeneratedComponentIds,
+  inspectNotePage,
   renderMissingPageComponents,
   handoffGeneratedNote,
   handoffExistingNote,

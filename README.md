@@ -14,7 +14,9 @@ The plugin does not ship or install an APK. It packages only the React Native Ja
   /storage/emulated/0/Note/Today/YYYY-MM-DD.note
   ```
 
-- Existing same-day files open without adding pages.
+- Existing nonblank same-day files open without modification.
+- A completely blank one-page dated note is treated as an interrupted generation
+  and repaired.
 - New files receive one responsive native page:
   - full date;
   - three blank plan/priority rows;
@@ -95,9 +97,21 @@ There is no INTERNET permission. The plugin reads and writes only beneath the Su
 - Existing-file handoff closes the plugin view before `openFile`.
 - A newly rendered note is already current beneath the overlay, so generation closes the overlay without opening the file a second time.
 
+### Page-0 firmware behavior
+
+Current device evidence shows that drawing directly into the seed page created by
+`createNote` can produce a blank result. v0.1 therefore uses the proven sequence:
+
+1. create the note;
+2. insert a new blank page at index 0;
+3. jump to page 0;
+4. insert/save/reload/verify the generated elements.
+
+The original seed page remains as a blank page 1. Removing it safely is deferred
+until that file-level operation is proven on Plugin Preview firmware.
+
 ### Assumptions requiring Plugin Preview device validation
 
-- The seed page created by `createNote` accepts direct page-0 insertion.
 - Immediate automatic close reveals the generated page reliably.
 - `style_white`, or a discovered blank equivalent, is accepted.
 - Native TextBox content has the expected search behavior. ISO-dated filenames are the guaranteed searchable identifier.
@@ -188,11 +202,13 @@ Then install through **Settings -> Apps -> Plugins**.
 1. New date creates `/Note/Today/YYYY-MM-DD.note`.
 2. Page 0 contains the date, plan rows, ruled journal, and cursive exercise.
 3. Plugin closes once and native handwriting is immediately available.
-4. Second press opens the same file without changing page count/content.
-5. Existing unmarked same-date note opens untouched.
-6. Partial marked layout is repaired without duplicate components.
-7. Permission denial and SDK failures remain visible with Retry/Settings.
-8. Layout fits Nomad (`1404 x 1872`) and Manta (`1920 x 2560`) portrait pages.
+4. The generated content is on page 0; the original blank seed is page 1.
+5. Second press opens the same file without changing page count/content.
+6. Existing nonblank unmarked same-date note opens untouched.
+7. A blank one-page note from an interrupted/older build is repaired.
+8. Partial marked layout is repaired without duplicate components.
+9. Permission denial and SDK failures remain visible with Retry/Settings.
+10. Layout fits Nomad (`1404 x 1872`) and Manta (`1920 x 2560`) portrait pages.
 
 ## Roadmap
 

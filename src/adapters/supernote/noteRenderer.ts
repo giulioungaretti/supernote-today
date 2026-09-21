@@ -337,6 +337,7 @@ const ensureCurrentTarget = async (
 export const renderMissingPageComponents = async (
   content: TodayPageContent,
   missingComponentIds: ReadonlySet<string>,
+  insertGeneratedPage: boolean,
 ): Promise<Result<void, DeviceFailure>> => {
   const unknownIds = [...missingComponentIds].filter(
     componentId => !PAGE_COMPONENT_IDS.includes(componentId),
@@ -352,6 +353,37 @@ export const renderMissingPageComponents = async (
   const current = await ensureCurrentTarget(content.notePath);
   if (!current.ok) {
     return current;
+  }
+
+  if (insertGeneratedPage) {
+    try {
+      const insertedPage = readSdkBoolean(
+        'insertNotePage',
+        await PluginFileAPI.insertNotePage({
+          notePath: content.notePath,
+          page: PAGE_INDEX,
+          template: 'style_white',
+        }),
+      );
+      if (!insertedPage.ok) {
+        return err(toDeviceFailure('create-note', insertedPage.error));
+      }
+
+      const jumped = readSdkBoolean(
+        'jumpToPage',
+        await PluginCommAPI.jumpToPage(PAGE_INDEX),
+      );
+      if (!jumped.ok) {
+        return err(toDeviceFailure('current-page', jumped.error));
+      }
+    } catch (error: unknown) {
+      return err(
+        toDeviceFailure(
+          'create-note',
+          sdkException('insertNotePage', error),
+        ),
+      );
+    }
   }
 
   let displaySize: Result<

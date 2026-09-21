@@ -7,6 +7,7 @@ import type {
   DeviceDiagnostics,
   DeviceFailure,
   DevicePort,
+  NotePageInspection,
   TodayPageContent,
 } from '../ports/devicePort';
 
@@ -30,6 +31,11 @@ class FakeDevice implements DevicePort {
   existingHandoffs: string[] = [];
   generatedHandoffs: string[] = [];
   renderFailure: DeviceFailure | null = null;
+  inspection: NotePageInspection = {
+    pageCount: 1,
+    pageZeroElementCount: 1,
+  };
+  insertGeneratedPageFlags: boolean[] = [];
 
   ensureFileAccess = async (): Promise<Result<void, DeviceFailure>> =>
     ok(undefined);
@@ -55,14 +61,20 @@ class FakeDevice implements DevicePort {
     Result<ReadonlySet<string>, DeviceFailure>
   > => ok(new Set(this.markers));
 
+  inspectNotePage = async (): Promise<
+    Result<NotePageInspection, DeviceFailure>
+  > => ok(this.inspection);
+
   renderMissingPageComponents = async (
     content: TodayPageContent,
     missing: ReadonlySet<string>,
+    insertGeneratedPage: boolean,
   ): Promise<Result<void, DeviceFailure>> => {
     if (this.renderFailure !== null) {
       return err(this.renderFailure);
     }
     this.rendered.push(content);
+    this.insertGeneratedPageFlags.push(insertGeneratedPage);
     missing.forEach(componentId => this.markers.add(componentId));
     return ok(undefined);
   };
@@ -118,6 +130,20 @@ describe('ensureTodayNote', () => {
       '/storage/emulated/0/Note/Today',
     ]);
     expect(device.rendered).toHaveLength(1);
+    expect(device.insertGeneratedPageFlags).toEqual([true]);
+    expect(device.generatedHandoffs).toEqual([notePath]);
+  });
+
+  it('repairs the blank one-page note created by the previous build', async () => {
+    const device = new FakeDevice();
+    device.exists = true;
+    device.inspection = {pageCount: 1, pageZeroElementCount: 0};
+
+    const result = await ensureTodayNote({clock, device});
+
+    expect(result.ok).toBe(true);
+    expect(device.rendered).toHaveLength(1);
+    expect(device.insertGeneratedPageFlags).toEqual([true]);
     expect(device.generatedHandoffs).toEqual([notePath]);
   });
 
@@ -142,6 +168,7 @@ describe('ensureTodayNote', () => {
 
     expect(result.ok).toBe(true);
     expect(device.rendered).toHaveLength(1);
+    expect(device.insertGeneratedPageFlags).toEqual([false]);
     expect(device.generatedHandoffs).toEqual([notePath]);
     expect(device.markers.size).toBe(PAGE_COMPONENT_IDS.length);
   });
