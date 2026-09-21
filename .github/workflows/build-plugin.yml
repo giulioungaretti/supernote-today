@@ -46,28 +46,6 @@ jobs:
       - name: Test
         run: npm test -- --runInBand
 
-      - name: Set up Java 17 toolchain
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Install Android SDK packages
-        shell: pwsh
-        run: |
-          $sdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools\latest\bin\sdkmanager.bat"
-          if (-not (Test-Path $sdkManager)) {
-            throw "sdkmanager was not found under ANDROID_HOME"
-          }
-          & $sdkManager `
-            "platforms;android-35" `
-            "build-tools;35.0.0" `
-            "ndk;27.0.12077973" `
-            "ndk;27.1.12297006"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Android SDK package installation failed"
-          }
-
       - name: Build plugin package
         shell: pwsh
         run: |
@@ -76,24 +54,23 @@ jobs:
             throw "Plugin packaging failed"
           }
 
-      - name: Verify packaged native plugin
+      - name: Verify TypeScript-only plugin package
         shell: pwsh
         run: |
           $plugin = "build\outputs\SupernoteToday.snplg"
           $generatedConfig = "build\generated\PluginConfig.json"
-          $nativePackage = "build\generated\app.npk"
           if (-not (Test-Path $plugin)) {
             throw "Expected plugin package was not produced: $plugin"
           }
-          if (-not (Test-Path $nativePackage)) {
-            throw "Native package app.npk is missing"
-          }
           $config = Get-Content $generatedConfig -Raw | ConvertFrom-Json
-          if ($config.nativeCodePackage -ne "/app.npk") {
-            throw "PluginConfig.json does not reference /app.npk"
+          if ($config.PSObject.Properties.Name -contains "nativeCodePackage") {
+            throw "TypeScript-only package unexpectedly declares nativeCodePackage"
           }
-          if ($config.reactPackages -notcontains "com.supernotetoday.TodayStoragePackage") {
-            throw "PluginConfig.json does not register TodayStoragePackage"
+          if ($config.PSObject.Properties.Name -contains "reactPackages") {
+            throw "TypeScript-only package unexpectedly declares reactPackages"
+          }
+          if (Test-Path "build\generated\app.npk") {
+            throw "TypeScript-only package unexpectedly contains app.npk"
           }
 
           $verification = Join-Path $env:RUNNER_TEMP "supernote-today-package"
@@ -101,10 +78,13 @@ jobs:
           $zip = Join-Path $verification "SupernoteToday.zip"
           Copy-Item $plugin $zip
           Expand-Archive -Path $zip -DestinationPath (Join-Path $verification "contents")
-          foreach ($entry in @("PluginConfig.json", "app.npk", "SupernoteToday.bundle", "icon.png")) {
+          foreach ($entry in @("PluginConfig.json", "SupernoteToday.bundle", "icon.png")) {
             if (-not (Test-Path (Join-Path $verification "contents\$entry"))) {
               throw "Packaged plugin is missing $entry"
             }
+          }
+          if (Test-Path (Join-Path $verification "contents\app.npk")) {
+            throw "Packaged plugin unexpectedly contains app.npk"
           }
 
           (Get-FileHash $plugin -Algorithm SHA256).Hash |

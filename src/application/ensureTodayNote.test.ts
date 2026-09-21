@@ -1,13 +1,6 @@
 import {ensureTodayNote} from './ensureTodayNote';
-import {lessonAt} from '../domain/curriculum';
 import {parseLocalDate} from '../domain/localDate';
 import {PAGE_COMPONENT_IDS} from '../domain/pageLayout';
-import {
-  completeAssignment,
-  defaultState,
-  reserveAssignment,
-  serializeState,
-} from '../domain/progress';
 import {err, ok, type Result} from '../domain/result';
 import type {Clock} from '../ports/clock';
 import type {
@@ -16,10 +9,6 @@ import type {
   DevicePort,
   TodayPageContent,
 } from '../ports/devicePort';
-import type {
-  StateStore,
-  StorageFailure,
-} from '../ports/stateStore';
 
 const fixedDate = new Date(2026, 8, 21, 8, 0, 0);
 const clock: Clock = {now: () => new Date(fixedDate)};
@@ -32,43 +21,11 @@ const date = (() => {
 })();
 const notePath = `/storage/emulated/0/Note/Today/${date}.note`;
 
-class FakeStateStore implements StateStore {
-  stateJson: string | null = null;
-  existingPaths = new Set<string>();
-  writes: string[] = [];
-  ensuredDirectories: string[] = [];
-
-  externalStorageRoot = async (): Promise<
-    Result<string, StorageFailure>
-  > => ok('/storage/emulated/0');
-
-  readState = async (): Promise<Result<string | null, StorageFailure>> =>
-    ok(this.stateJson);
-
-  writeState = async (
-    json: string,
-  ): Promise<Result<void, StorageFailure>> => {
-    this.stateJson = json;
-    this.writes.push(json);
-    return ok(undefined);
-  };
-
-  ensureDirectory = async (
-    path: string,
-  ): Promise<Result<void, StorageFailure>> => {
-    this.ensuredDirectories.push(path);
-    return ok(undefined);
-  };
-
-  exists = async (
-    path: string,
-  ): Promise<Result<boolean, StorageFailure>> =>
-    ok(this.existingPaths.has(path));
-}
-
 class FakeDevice implements DevicePort {
+  exists = false;
   markers = new Set<string>();
   created: string[] = [];
+  ensuredDirectories: string[] = [];
   rendered: TodayPageContent[] = [];
   existingHandoffs: string[] = [];
   generatedHandoffs: string[] = [];
@@ -76,6 +33,16 @@ class FakeDevice implements DevicePort {
 
   ensureFileAccess = async (): Promise<Result<void, DeviceFailure>> =>
     ok(undefined);
+
+  ensureNoteDirectory = async (
+    path: string,
+  ): Promise<Result<void, DeviceFailure>> => {
+    this.ensuredDirectories.push(path);
+    return ok(undefined);
+  };
+
+  noteExists = async (): Promise<Result<boolean, DeviceFailure>> =>
+    ok(this.exists);
 
   createNote = async (
     path: string,
@@ -126,99 +93,60 @@ class FakeDevice implements DevicePort {
 }
 
 describe('ensureTodayNote', () => {
-  it('opens an existing unassigned note without advancing progress', async () => {
-    const stateStore = new FakeStateStore();
+  it('opens an existing unmarked note untouched', async () => {
     const device = new FakeDevice();
-    stateStore.existingPaths.add(notePath);
+    device.exists = true;
 
-    const result = await ensureTodayNote({clock, stateStore, device});
+    const result = await ensureTodayNote({clock, device});
 
     expect(result).toEqual({
       ok: true,
-      value: {
-        kind: 'opened-existing',
-        date,
-        notePath,
-        assignment: null,
-      },
+      value: {kind: 'opened-existing', date, notePath},
     });
-    expect(stateStore.writes).toHaveLength(0);
     expect(device.rendered).toHaveLength(0);
     expect(device.existingHandoffs).toEqual([notePath]);
   });
 
-  it('creates, renders, verifies, completes, and hands off a new note', async () => {
-    const stateStore = new FakeStateStore();
+  it('creates, renders, verifies, and hands off a new note', async () => {
     const device = new FakeDevice();
 
-    const result = await ensureTodayNote({clock, stateStore, device});
+    const result = await ensureTodayNote({clock, device});
 
     expect(result.ok).toBe(true);
     expect(device.created).toEqual([notePath]);
-    expect(device.rendered).toHaveLength(1);
-    expect(device.rendered[0]?.lesson).toEqual(lessonAt(0));
-    expect(device.generatedHandoffs).toEqual([notePath]);
-    expect(stateStore.ensuredDirectories).toEqual([
+    expect(device.ensuredDirectories).toEqual([
       '/storage/emulated/0/Note/Today',
     ]);
-    expect(stateStore.writes).toHaveLength(2);
-
-    const persisted = JSON.parse(stateStore.writes[1] ?? '{}') as {
-      nextSequence?: number;
-      assignments?: Record<string, {status?: string}>;
-    };
-    expect(persisted.nextSequence).toBe(1);
-    expect(persisted.assignments?.[date]?.status).toBe('complete');
+    expect(device.rendered).toHaveLength(1);
+    expect(device.generatedHandoffs).toEqual([notePath]);
   });
 
-  it('reopens a completed same-day assignment without mutation', async () => {
-    const stateStore = new FakeStateStore();
+  it('opens a complete generated note without redrawing it', async () => {
     const device = new FakeDevice();
-    const reserved = reserveAssignment({
-      state: defaultState(),
-      date,
-      notePath,
-      expectedElementIds: PAGE_COMPONENT_IDS,
-      assignedAt: fixedDate.toISOString(),
-    }).state;
-    stateStore.stateJson = serializeState(
-      completeAssignment(reserved, date, fixedDate.toISOString()),
-    );
-    stateStore.existingPaths.add(notePath);
-
-    const result = await ensureTodayNote({clock, stateStore, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.rendered).toHaveLength(0);
-    expect(device.created).toHaveLength(0);
-    expect(device.existingHandoffs).toEqual([notePath]);
-    expect(stateStore.writes).toHaveLength(0);
-  });
-
-  it('commits a pending page that was already fully rendered', async () => {
-    const stateStore = new FakeStateStore();
-    const device = new FakeDevice();
-    const pending = reserveAssignment({
-      state: defaultState(),
-      date,
-      notePath,
-      expectedElementIds: PAGE_COMPONENT_IDS,
-      assignedAt: fixedDate.toISOString(),
-    }).state;
-    stateStore.stateJson = serializeState(pending);
-    stateStore.existingPaths.add(notePath);
+    device.exists = true;
     PAGE_COMPONENT_IDS.forEach(componentId => device.markers.add(componentId));
 
-    const result = await ensureTodayNote({clock, stateStore, device});
+    const result = await ensureTodayNote({clock, device});
 
     expect(result.ok).toBe(true);
     expect(device.rendered).toHaveLength(0);
     expect(device.existingHandoffs).toEqual([notePath]);
-    expect(stateStore.writes).toHaveLength(1);
   });
 
-  it('keeps the pending assignment when rendering fails', async () => {
-    const stateStore = new FakeStateStore();
+  it('repairs only missing components when markers are partial', async () => {
+    const device = new FakeDevice();
+    device.exists = true;
+    device.markers.add(PAGE_COMPONENT_IDS[0] ?? 'title');
+
+    const result = await ensureTodayNote({clock, device});
+
+    expect(result.ok).toBe(true);
+    expect(device.rendered).toHaveLength(1);
+    expect(device.generatedHandoffs).toEqual([notePath]);
+    expect(device.markers.size).toBe(PAGE_COMPONENT_IDS.length);
+  });
+
+  it('reports rendering failure without claiming success', async () => {
     const device = new FakeDevice();
     device.renderFailure = {
       kind: 'device-failure',
@@ -226,7 +154,7 @@ describe('ensureTodayNote', () => {
       message: 'Insertion failed',
     };
 
-    const result = await ensureTodayNote({clock, stateStore, device});
+    const result = await ensureTodayNote({clock, device});
 
     expect(result).toEqual({
       ok: false,
@@ -236,36 +164,5 @@ describe('ensureTodayNote', () => {
         message: 'Insertion failed',
       },
     });
-    expect(stateStore.writes).toHaveLength(1);
-    const pending = JSON.parse(stateStore.writes[0] ?? '{}') as {
-      nextSequence?: number;
-      assignments?: Record<string, {status?: string}>;
-    };
-    expect(pending.nextSequence).toBe(0);
-    expect(pending.assignments?.[date]?.status).toBe('pending');
-  });
-
-  it('regenerates a deleted completed note without advancing twice', async () => {
-    const stateStore = new FakeStateStore();
-    const device = new FakeDevice();
-    const reserved = reserveAssignment({
-      state: defaultState(),
-      date,
-      notePath,
-      expectedElementIds: PAGE_COMPONENT_IDS,
-      assignedAt: fixedDate.toISOString(),
-    }).state;
-    stateStore.stateJson = serializeState(
-      completeAssignment(reserved, date, fixedDate.toISOString()),
-    );
-
-    const result = await ensureTodayNote({clock, stateStore, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.created).toEqual([notePath]);
-    const persisted = JSON.parse(
-      stateStore.writes[stateStore.writes.length - 1] ?? '{}',
-    ) as {nextSequence?: number};
-    expect(persisted.nextSequence).toBe(1);
   });
 });

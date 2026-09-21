@@ -43,6 +43,12 @@ export interface DeviceDiagnostics {
 
 export interface DevicePort {
   readonly ensureFileAccess: () => Promise<Result<void, DeviceFailure>>;
+  readonly ensureNoteDirectory: (
+    absolutePath: string,
+  ) => Promise<Result<void, DeviceFailure>>;
+  readonly noteExists: (
+    absolutePath: string,
+  ) => Promise<Result<boolean, DeviceFailure>>;
   readonly createNote: (
     notePath: string,
   ) => Promise<Result<void, DeviceFailure>>;

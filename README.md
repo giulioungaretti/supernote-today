@@ -1,30 +1,50 @@
 # Supernote Today
 
-Supernote Today is a native-first daily journal and progressive cursive-practice plugin for current Supernote Plugin Preview firmware. Its NOTE toolbar action opens the dated native `.note` file for the current day. If the file does not exist, the plugin creates page 0, adds a compact plan, a large ruled journal area, and a 10-minute cursive exercise, then returns control to the native NOTE editor.
+Supernote Today is a TypeScript-only, native-first daily journal and cursive-practice plugin for current Supernote Plugin Preview firmware. Its NOTE toolbar action opens the current date's native `.note` file. When the file is absent, the plugin creates page 0, draws a compact plan, a large ruled journal area, and a 10-minute cursive lesson, then returns control to the native NOTE editor.
 
-The plugin does **not** implement an ink engine, note editor, sync service, task backend, calendar, CalDAV client, cloud service, or PARA system. All journal handwriting remains native Supernote ink.
+The plugin does not ship or install an APK. It packages only the React Native JavaScript bundle, `PluginConfig.json`, and assets into `.snplg`.
 
 ## v0.1 behavior
 
 - NOTE-only **Today** toolbar action.
 - Plugin-management **Config** entry.
-- Default journal location:
+- Fixed journal directory:
 
   ```text
   /storage/emulated/0/Note/Today/YYYY-MM-DD.note
   ```
 
-- Existing same-day files open untouched.
-- A new dated file receives one responsive first-page layout:
+- Existing same-day files open without adding pages.
+- New files receive one responsive native page:
   - full date;
   - three blank plan/priority rows;
   - large ruled journal region;
   - bottom 10-minute cursive lesson.
-- Reopening the same day does not add a page, redraw the layout, or advance practice.
-- Interrupted generation is resumable: generated native elements carry stable private markers, and retries insert only missing components.
-- Curriculum progress advances only after the new page is saved, reloaded, and verified.
-- Missed calendar days do not skip lessons.
-- After lesson 56, the curriculum restarts from basic strokes while dated history remains intact.
+- Generated elements carry stable per-component markers.
+- A partially generated plugin page is repaired by inserting only missing marked components.
+- The 56-lesson curriculum is selected deterministically from the local date, so reopening the same day always produces the same exercise without plugin storage.
+- No custom ink engine, task backend, sync, calendar, cloud service, or PARA system.
+
+## TypeScript-only architecture
+
+```text
+NOTE toolbar/config events
+        |
+        v
+application/ensureTodayNote.ts
+        |
+        +--> pure TypeScript date/curriculum/layout logic
+        |
+        +--> sn-plugin-lib TypeScript adapter
+               |
+               +--> FILE permission checks
+               +--> FileUtils.exists/makeDir
+               +--> native NOTE create/open
+               +--> native TextBox/geometry insertion
+               +--> save/reload/marker verification
+```
+
+The checked-in Android/iOS directories come from the official React Native template and support normal project tooling. Supernote's plugin packager takes the no-native path because no custom React package or native module is registered.
 
 ## Curriculum
 
@@ -39,65 +59,9 @@ The pure TypeScript curriculum contains 56 explicit lessons:
 | Sentences | 7 |
 | Natural cursive writing | 7 |
 
-Settings can reset future practice to lesson 1 or start future notes at the first lesson of any phase. Existing assignments are never rewritten.
+The lesson index is derived from the number of calendar days since `2026-01-01`, modulo 56. This guarantees same-date idempotence with no persistent plugin state.
 
-## Architecture
-
-```text
-NOTE toolbar/config events
-        |
-        v
-application/ensureTodayNote.ts
-        |
-        +--> pure domain: date, curriculum, progress, layout
-        |
-        +--> StateStore port --> narrow Kotlin storage module
-        |
-        +--> DevicePort --> sn-plugin-lib adapter
-                              |
-                              +--> native NOTE create/open
-                              +--> native TextBox/geometry elements
-                              +--> save/reload/verification
-```
-
-Important boundaries:
-
-- `src/domain/` is pure TypeScript.
-- `src/application/` owns the transactional ensure/open behavior.
-- `src/ports/` defines explicit side-effect interfaces.
-- `src/adapters/supernote/` is the only code that understands `sn-plugin-lib`.
-- `TodayStorageModule.kt` stores state and creates/checks directories; it never stores note content or performs network access.
-- React Native UI is limited to opening status, actionable failures, and settings.
-
-## Persistence and recovery
-
-The plugin stores only settings and practice metadata:
-
-```text
-/storage/emulated/0/Document/SupernoteToday/state.json
-```
-
-The JSON file contains:
-
-- schema version;
-- journal root;
-- next curriculum sequence;
-- dated exercise assignments;
-- generation status and expected native element IDs.
-
-Writes use a temporary file plus atomic rename where Android supports it. The native module exposes no broad delete API and rejects paths outside the Supernote `Note` root for journal operations.
-
-Generation is transactional:
-
-1. Reserve the dated exercise and persist a pending assignment.
-2. Create the native note when absent.
-3. Open page 0 beneath the plugin overlay.
-4. Insert only missing native elements.
-5. Save, reload, and verify all stable markers.
-6. Persist completion and advance the curriculum once.
-7. Close the plugin overlay once, revealing the generated native note.
-
-If a failure occurs before step 6, the plugin keeps the assignment pending and shows an actionable error. It does not report an incomplete note as success.
+**v0.1 limitation:** missed calendar days advance the deterministic schedule. Explicit generated-note progress, reset/start controls, and configurable journal roots are roadmap work pending a documented generic TypeScript storage API.
 
 ## Privacy and permissions
 
@@ -106,184 +70,145 @@ If a failure occurs before step 6, the plugin keeps the assignment pending and s
 - `plugin.permission.FILE:READ`
 - `plugin.permission.FILE:WRITE`
 
-There is no INTERNET permission. The Android manifests also omit INTERNET permission and disable cleartext traffic in the debug manifest.
-
-The plugin reads/writes only:
-
-- the configured folder beneath `/storage/emulated/0/Note`;
-- `Document/SupernoteToday/state.json`.
-
-No journal content, handwriting, filenames, settings, or usage data leaves the device.
+There is no INTERNET permission. The plugin reads and writes only beneath the Supernote `Note` directory. It stores no settings database, analytics, credentials, or journal content outside native `.note` files.
 
 ## SDK and firmware status
 
-### Verified from current official documentation/package metadata
+### Verified
 
 - React Native `0.79.2`.
 - Official template `@supernote-plugin/sn-plugin-template@1.0.12`.
 - `sn-plugin-lib@0.1.65`.
-- PluginHost lifecycle and NOTE toolbar/config registration.
-- `.snplg` JS bundle and optional custom native package format.
-- `PluginFileAPI.createNote`, `openFile`, `getElements`, and element-count/page APIs.
-- Current-page native element insertion through `PluginCommAPI.insertPageElements`.
-- `PluginNoteAPI.saveCurrentNote`, `PluginCommAPI.reloadFile`, and plugin-view show/close APIs.
-- Native page dimensions through `getPageDisplaySize`.
-- FILE:READ/FILE:WRITE declaration and runtime authorization requirements.
+- NOTE toolbar/config registration and PluginHost lifecycle.
+- `.snplg` JavaScript bundle/config/assets format.
+- `PluginFileAPI.createNote`, `openFile`, and page element APIs.
+- `PluginCommAPI.insertPageElements`, `getPageDisplaySize`, and `reloadFile`.
+- `PluginNoteAPI.saveCurrentNote`.
+- `FileUtils.exists` and `FileUtils.makeDir`.
+- FILE:READ/FILE:WRITE declaration and runtime authorization.
 
-### Device-informed behavior from public examples
+### Device-informed constraints
 
 - Boolean SDK calls are accepted only when both the response envelope and `result` indicate success.
-- Geometry is inserted through the current-page API, not file-level insertion.
-- Geometry uses pixel coordinates, `layer = null`, and pen width of at least `100`.
-- Text batches remain small and practice text is printable ASCII.
-- Existing-file handoff closes the plugin view before calling `openFile`.
-- A newly rendered note is already current under the overlay, so successful generation closes the overlay without opening the file a second time.
+- Geometry uses current-page insertion, pixel coordinates, `layer = null`, and pen width of at least `100`.
+- Text batches remain small and prompts use printable ASCII.
+- Existing-file handoff closes the plugin view before `openFile`.
+- A newly rendered note is already current beneath the overlay, so generation closes the overlay without opening the file a second time.
 
 ### Assumptions requiring Plugin Preview device validation
 
-- The seed page created by `createNote` accepts direct page-0 element insertion without adding a second page.
-- Immediate automatic close after verification reliably reveals page 0 on the target firmware.
-- `style_white`, or a discovered blank equivalent, is accepted by the installed firmware.
-- Native TextBox content has the expected search behavior. ISO-dated filenames are the guaranteed searchable identifier in v0.1.
-- Nomad/Manta firmware accepts the sparse geometry/text batches and marker metadata exactly as documented.
+- The seed page created by `createNote` accepts direct page-0 insertion.
+- Immediate automatic close reveals the generated page reliably.
+- `style_white`, or a discovered blank equivalent, is accepted.
+- Native TextBox content has the expected search behavior. ISO-dated filenames are the guaranteed searchable identifier.
+- Marker metadata survives save/reload on target Nomad/Manta firmware.
 
-The plugin fails visibly rather than adding a hidden fallback page when these assumptions do not hold.
+The plugin reports generation/layout/open failures instead of silently claiming success.
 
-## Build prerequisites
+## Local validation
 
-The repository's GitHub Actions build uses:
+Node.js 18 or newer is sufficient for the TypeScript-only build.
 
-- Node.js 18 or newer;
-- Temurin JDK 17, because the React Native Gradle plugins resolve a Java 17 toolchain;
-- Android SDK Platform 35;
-- Android Build Tools 35.0.0;
-- Android NDK `27.0.12077973` and `27.1.12297006`.
-
-This project is pinned to React Native `0.79.2`.
-
-Current Supernote environment documentation states JDK 19 or newer, while the generated React Native Gradle build requests a Java 17 toolchain. The checked-in workflow uses the toolchain required by the build and is the canonical packaging environment until those upstream requirements converge.
-
-### npm registry
-
-If direct `registry.npmjs.org` access is unavailable, configure the Microsoft proxy before restore:
+If direct npm access is unavailable:
 
 ```powershell
 npm config set registry https://packagefeedproxy.microsoft.io/npm/
 npm config get registry
 ```
 
-Do not alternate repeated restore attempts between the proxy and the public registry.
-
-## Install dependencies and validate
+Then:
 
 ```powershell
 npm ci
 npm run typecheck
 npm run lint
 npm test -- --runInBand
-```
-
-Run all three checks with:
-
-```powershell
-npm run validate
-```
-
-## Build the plugin
-
-Windows:
-
-```powershell
 .\buildPlugin.ps1
 ```
 
-Linux/macOS:
-
-```bash
-./buildPlugin.sh
-```
-
-The packaged plugin is written to:
+The package is written to:
 
 ```text
 build/outputs/SupernoteToday.snplg
 ```
 
-The custom Kotlin storage module causes the official build script to package a stripped arm64 APK and declare its React package in the generated plugin config.
+No JDK, Android SDK, Gradle build, APK, `nativeCodePackage`, or `reactPackages` is required.
 
-## Build without local Android tooling
+## GitHub Actions artifact
 
-The workflow at `.github/workflows/build-plugin.yml` runs on every branch push, pull request to `main`, and manual dispatch. It restores exclusively through the configured Microsoft npm proxy, runs typecheck/lint/tests, installs the required Android SDK/NDK versions, builds the native `.snplg`, verifies that the package contains `app.npk`, and uploads the result.
+`.github/workflows/build-plugin.yml` runs on every branch push, pull request to `main`, and manual dispatch. It:
 
-To download a workflow build:
+1. configures the Microsoft npm proxy;
+2. restores dependencies;
+3. runs typecheck, lint, and tests;
+4. runs the official PowerShell plugin packager on `windows-latest`;
+5. verifies that the `.snplg` contains the JS bundle/config/icon and contains no `app.npk` or native package declarations;
+6. uploads `supernote-today-snplg`.
 
-1. Open the repository's **Actions** tab.
+To download:
+
+1. Open the repository **Actions** tab.
 2. Open **Build Supernote plugin**.
-3. Select a successful branch run, pull-request run, or manually dispatched run.
-4. In **Artifacts**, download `supernote-today-snplg`.
-5. Extract the downloaded ZIP. It contains:
-   - `SupernoteToday.snplg`;
-   - `SupernoteToday.snplg.sha256`.
+3. Select a successful run.
+4. Download the `supernote-today-snplg` artifact.
+5. Extract `SupernoteToday.snplg` and its SHA-256 file.
 
 ## Install on Supernote Nomad
 
-The device must run firmware that includes the current **Plugin Preview** feature. Settings labels can vary slightly between preview firmware builds.
+The Nomad must run firmware with **Plugin Preview** support. Preview firmware wording can vary.
 
-### Copy over USB
+### USB
 
-1. Connect the Nomad over USB and expose its internal storage.
-2. Copy `SupernoteToday.snplg` into the top-level `MyStyle` directory. The Android path is `/storage/emulated/0/MyStyle/`, commonly shown as `/MyStyle/` over USB.
-3. Safely disconnect the device.
+1. Connect the Nomad over USB.
+2. Copy `SupernoteToday.snplg` to the top-level `MyStyle` directory (`/storage/emulated/0/MyStyle/`, commonly shown as `/MyStyle/`).
+3. Disconnect safely.
 4. Open **Settings -> Apps -> Plugins**.
-5. Choose **Add Plugin**, select `SupernoteToday.snplg`, and confirm.
+5. Choose **Add Plugin**, select the file, and confirm.
 6. Grant file read/write access on first use.
 
 ### Optional ADB copy
 
-Only use ADB when it is already enabled on the device and `adb devices` shows the intended Nomad:
+Only when ADB is already enabled and `adb devices` shows the intended device:
 
 ```powershell
 adb push .\build\outputs\SupernoteToday.snplg /sdcard/MyStyle/SupernoteToday.snplg
 ```
 
-Then continue in **Settings -> Apps -> Plugins**.
+Then install through **Settings -> Apps -> Plugins**.
 
-### Add versus reinstall
+### Add Plugin versus Reinstall Plugin
 
 - Use **Add Plugin** for the first installation.
-- When updating an existing installation, use **Reinstall Plugin** or the firmware's equivalent replace/update action when it is available.
-- v0.1 contains a native module (`app.npk`). For builds that change Kotlin/native code, reinstalling is required so PluginHost refreshes the native code package; copying a new `.snplg` alone is not sufficient.
-- If the preview firmware does not expose a reinstall action, remove the installed plugin and use **Add Plugin** again. This fallback wording is device-build dependent; confirm the prompt before removing a plugin. Practice state is stored in `Document/SupernoteToday`, outside the plugin install directory.
+- Use **Reinstall Plugin**, Replace, or the equivalent firmware action when updating the same plugin ID. The exact label may vary.
+- v0.1 is JavaScript-only, so no native APK refresh is involved.
+- If a preview build has no reinstall action, remove the old plugin and add the new `.snplg` again after confirming the device prompt.
 
-## Manual device validation checklist
+## Manual device checklist
 
-Run this checklist on each target firmware/device:
-
-1. First press on a new date creates `/Note/Today/YYYY-MM-DD.note`.
-2. Page 0 contains the date, three plan rows, ruled journal area, and assigned cursive exercise.
-3. The plugin closes once and page 0 is ready for native handwriting.
-4. A second press opens the same file without changing its page count or exercise.
-5. A manually created same-date note opens untouched and does not advance practice.
-6. Denied permissions produce a concise error with Retry and Settings.
-7. Force-close during generation, then retry; missing components are repaired without duplicates.
-8. Change journal root; only future dates use the new root.
-9. Reset/start controls affect only future generated dates.
-10. Verify layout and handwriting space on both Nomad (`1404 x 1872`) and Manta (`1920 x 2560`) portrait pages.
+1. New date creates `/Note/Today/YYYY-MM-DD.note`.
+2. Page 0 contains the date, plan rows, ruled journal, and cursive exercise.
+3. Plugin closes once and native handwriting is immediately available.
+4. Second press opens the same file without changing page count/content.
+5. Existing unmarked same-date note opens untouched.
+6. Partial marked layout is repaired without duplicate components.
+7. Permission denial and SDK failures remain visible with Retry/Settings.
+8. Layout fits Nomad (`1404 x 1872`) and Manta (`1920 x 2560`) portrait pages.
 
 ## Roadmap
 
-Planned phases, deliberately excluded from v0.1:
-
-1. Carry-over plan lines from the previous day, without cloud sync.
-2. Previous/next dated-note navigation.
-3. Weekly and monthly archive views.
-4. Native keywords, titles, links, and backlinks after firmware behavior is proven reliable.
-5. Practice completion, history views, and local statistics.
+1. Documented TypeScript-only settings/progress persistence.
+2. Practice progress that does not skip missed days, plus reset/start controls.
+3. Configurable journal root.
+4. Carry-over plan lines.
+5. Previous/next day navigation.
+6. Weekly/monthly archive views.
+7. Proven native keywords, titles, links, and backlinks.
+8. Local practice history/statistics.
 
 ## Clean-room statement
 
-This repository was created as a new standalone project from the official Supernote plugin template. Public projects including SNFolio and Task Hub were studied only for documented SDK usage, firmware constraints, and failure lessons. Their product architecture and source were not copied wholesale.
+This standalone repository was generated from the official Supernote template. Public projects including SNFolio and Task Hub were studied only for SDK usage and firmware failure lessons; their product code and architecture were not copied wholesale.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE). The official scaffold retains its upstream MIT notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache License 2.0. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

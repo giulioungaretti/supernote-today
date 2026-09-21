@@ -1,4 +1,5 @@
 import {
+  FileUtils,
   PluginCommAPI,
   PluginFileAPI,
   PluginManager,
@@ -133,6 +134,50 @@ const createNote = async (
   }
 
   return err(lastFailure);
+};
+
+const ensureNoteDirectory = async (
+  absolutePath: string,
+): Promise<Result<void, DeviceFailure>> => {
+  try {
+    if (await FileUtils.exists(absolutePath)) {
+      return ok(undefined);
+    }
+    const created = await FileUtils.makeDir(absolutePath);
+    return created
+      ? ok(undefined)
+      : err({
+          kind: 'device-failure',
+          step: 'create-note',
+          message: `Could not create journal directory: ${absolutePath}`,
+        });
+  } catch (error: unknown) {
+    return err({
+      kind: 'device-failure',
+      step: 'create-note',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Could not create the journal directory',
+    });
+  }
+};
+
+const noteExists = async (
+  absolutePath: string,
+): Promise<Result<boolean, DeviceFailure>> => {
+  try {
+    return ok(await FileUtils.exists(absolutePath));
+  } catch (error: unknown) {
+    return err({
+      kind: 'device-failure',
+      step: 'read-elements',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Could not check whether the dated note exists',
+    });
+  }
 };
 
 const closePluginView = async (): Promise<Result<void, DeviceFailure>> => {
@@ -283,6 +328,8 @@ const diagnostics = async (): Promise<
 
 export const supernoteDeviceAdapter: DevicePort = {
   ensureFileAccess,
+  ensureNoteDirectory,
+  noteExists,
   createNote,
   readGeneratedComponentIds,
   renderMissingPageComponents,
