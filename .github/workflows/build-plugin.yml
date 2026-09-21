@@ -1,0 +1,121 @@
+name: Build Supernote plugin
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Validate and package
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Configure Microsoft npm proxy
+        shell: pwsh
+        run: |
+          npm config set registry https://packagefeedproxy.microsoft.io/npm/
+          if ((npm config get registry).Trim() -ne "https://packagefeedproxy.microsoft.io/npm/") {
+            throw "npm registry was not configured to use the Microsoft proxy"
+          }
+
+      - name: Restore dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint -- --no-cache
+
+      - name: Test
+        run: npm test -- --runInBand
+
+      - name: Set up Java 17 toolchain
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK packages
+        shell: pwsh
+        run: |
+          $sdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools\latest\bin\sdkmanager.bat"
+          if (-not (Test-Path $sdkManager)) {
+            throw "sdkmanager was not found under ANDROID_HOME"
+          }
+          & $sdkManager `
+            "platforms;android-35" `
+            "build-tools;35.0.0" `
+            "ndk;27.0.12077973" `
+            "ndk;27.1.12297006"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Android SDK package installation failed"
+          }
+
+      - name: Build plugin package
+        shell: pwsh
+        run: |
+          & .\buildPlugin.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Plugin packaging failed"
+          }
+
+      - name: Verify packaged native plugin
+        shell: pwsh
+        run: |
+          $plugin = "build\outputs\SupernoteToday.snplg"
+          $generatedConfig = "build\generated\PluginConfig.json"
+          $nativePackage = "build\generated\app.npk"
+          if (-not (Test-Path $plugin)) {
+            throw "Expected plugin package was not produced: $plugin"
+          }
+          if (-not (Test-Path $nativePackage)) {
+            throw "Native package app.npk is missing"
+          }
+          $config = Get-Content $generatedConfig -Raw | ConvertFrom-Json
+          if ($config.nativeCodePackage -ne "/app.npk") {
+            throw "PluginConfig.json does not reference /app.npk"
+          }
+          if ($config.reactPackages -notcontains "com.supernotetoday.TodayStoragePackage") {
+            throw "PluginConfig.json does not register TodayStoragePackage"
+          }
+
+          $verification = Join-Path $env:RUNNER_TEMP "supernote-today-package"
+          New-Item -ItemType Directory -Path $verification | Out-Null
+          $zip = Join-Path $verification "SupernoteToday.zip"
+          Copy-Item $plugin $zip
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $verification "contents")
+          foreach ($entry in @("PluginConfig.json", "app.npk", "SupernoteToday.bundle", "icon.png")) {
+            if (-not (Test-Path (Join-Path $verification "contents\$entry"))) {
+              throw "Packaged plugin is missing $entry"
+            }
+          }
+
+          (Get-FileHash $plugin -Algorithm SHA256).Hash |
+            Set-Content "build\outputs\SupernoteToday.snplg.sha256"
+
+      - name: Upload installable plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: supernote-today-snplg
+          path: |
+            build/outputs/SupernoteToday.snplg
+            build/outputs/SupernoteToday.snplg.sha256
+          if-no-files-found: error
+          retention-days: 30
