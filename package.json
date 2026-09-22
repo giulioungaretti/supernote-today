@@ -1,6 +1,6 @@
 {
   "name": "SupernoteToday",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A native-first daily journal and progressive cursive practice plugin for Supernote.",
   "license": "Apache-2.0",
   "repository": {
@@ -16,8 +16,13 @@
     "start": "react-native start",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "typecheck": "tsc --noEmit",
-    "validate": "npm run typecheck && npm run lint && npm test -- --runInBand"
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.tools.json",
+    "templates:generate": "tsx scripts/generateTemplates.ts",
+    "templates:check": "tsx scripts/generateTemplates.ts --check",
+    "verify:package": "powershell -ExecutionPolicy Bypass -File scripts/verifyPlugin.ps1",
+    "preview:device": "vite --config preview/vite.config.ts",
+    "preview:build": "vite build --config preview/vite.config.ts",
+    "validate": "npm run typecheck && npm run lint && npm test -- --runInBand && npm run templates:check"
   },
   "dependencies": {
     "react": "19.0.0",
@@ -42,7 +47,9 @@
     "jest": "^29.6.3",
     "prettier": "2.8.8",
     "react-test-renderer": "19.0.0",
-    "typescript": "5.0.4"
+    "typescript": "5.0.4",
+    "tsx": "4.20.6",
+    "vite": "6.3.6"
   },
   "engines": {
     "node": ">=18"

@@ -1,24 +1,24 @@
 import type {CursiveLesson} from '../domain/curriculum';
 import type {LocalDate} from '../domain/localDate';
+import type {NoteInspection} from '../domain/noteDecision';
 import type {Result} from '../domain/result';
 
 export type DeviceStep =
   | 'permission-read'
   | 'permission-write'
-  | 'templates'
+  | 'check-note'
+  | 'ensure-directory'
+  | 'template'
   | 'create-note'
-  | 'read-elements'
-  | 'open-target'
-  | 'current-file'
-  | 'current-page'
+  | 'inspect-note'
+  | 'insert-page'
   | 'page-size'
   | 'create-element'
-  | 'insert-elements'
-  | 'save-note'
-  | 'reload-note'
-  | 'verify-elements'
+  | 'insert-text'
+  | 'verify-text'
+  | 'remove-empty-pages'
   | 'close-view'
-  | 'open-existing'
+  | 'open-note'
   | 'show-view'
   | 'device-info';
 
@@ -41,41 +41,36 @@ export interface DeviceDiagnostics {
   readonly deviceName: string;
 }
 
-export interface NotePageInspection {
-  readonly pageCount: number;
-  readonly pageZeroElementCount: number;
-}
-
 export interface DevicePort {
   readonly ensureFileAccess: () => Promise<Result<void, DeviceFailure>>;
   readonly ensureNoteDirectory: (
-    absolutePath: string,
+    path: string,
   ) => Promise<Result<void, DeviceFailure>>;
   readonly noteExists: (
-    absolutePath: string,
+    path: string,
   ) => Promise<Result<boolean, DeviceFailure>>;
+  readonly resolveTemplate: () => Promise<Result<string, DeviceFailure>>;
   readonly createNote: (
-    notePath: string,
+    path: string,
+    template: string,
   ) => Promise<Result<void, DeviceFailure>>;
-  readonly readGeneratedComponentIds: (
-    notePath: string,
-    date: LocalDate,
-  ) => Promise<Result<ReadonlySet<string>, DeviceFailure>>;
-  readonly inspectNotePage: (
-    notePath: string,
-  ) => Promise<Result<NotePageInspection, DeviceFailure>>;
-  readonly renderMissingPageComponents: (
+  readonly inspectNote: (
+    path: string,
+  ) => Promise<Result<NoteInspection, DeviceFailure>>;
+  readonly insertTemplatePage: (
+    path: string,
+    template: string,
+    originalPageCount: number,
+  ) => Promise<Result<void, DeviceFailure>>;
+  readonly insertTodayText: (
     content: TodayPageContent,
-    missingComponentIds: ReadonlySet<string>,
-    insertGeneratedPage: boolean,
   ) => Promise<Result<void, DeviceFailure>>;
-  readonly handoffGeneratedNote: (
-    notePath: string,
-  ) => Promise<Result<void, DeviceFailure>>;
-  readonly handoffExistingNote: (
-    notePath: string,
+  readonly removeEmptySeedPages: (
+    path: string,
+    originalPageCount: number,
   ) => Promise<Result<void, DeviceFailure>>;
   readonly closePluginView: () => Promise<Result<void, DeviceFailure>>;
+  readonly openNote: (path: string) => Promise<Result<void, DeviceFailure>>;
   readonly showPluginView: () => Promise<Result<void, DeviceFailure>>;
   readonly diagnostics: () => Promise<Result<DeviceDiagnostics, DeviceFailure>>;
 }

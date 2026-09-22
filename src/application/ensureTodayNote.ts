@@ -1,217 +1,125 @@
 import {describeDate, type LocalDate} from '../domain/localDate';
 import {lessonForDate} from '../domain/lessonSchedule';
-import {PAGE_COMPONENT_IDS} from '../domain/pageLayout';
+import {decideExistingNote} from '../domain/noteDecision';
 import {err, ok, type Result} from '../domain/result';
 import type {Clock} from '../ports/clock';
 import type {DeviceFailure, DevicePort} from '../ports/devicePort';
 
 export const DEFAULT_JOURNAL_ROOT = '/storage/emulated/0/Note/Today';
 
-export type EnsureTodayStep =
-  | 'permissions'
-  | 'check-note'
-  | 'ensure-directory'
-  | 'create-note'
-  | 'inspect-page'
-  | 'render-page'
-  | 'verify-page'
-  | 'handoff';
-
 export interface EnsureTodayFailure {
   readonly kind: 'ensure-today-failure';
-  readonly step: EnsureTodayStep;
+  readonly step: DeviceFailure['step'] | 'initialize' | 'unexpected';
   readonly message: string;
   readonly code?: number;
 }
 
-export type EnsureTodayOutcome =
-  | Readonly<{
-      kind: 'opened-existing';
-      date: LocalDate;
-      notePath: string;
-    }>
-  | Readonly<{
-      kind: 'generated';
-      date: LocalDate;
-      notePath: string;
-      exerciseId: string;
-    }>;
+export interface EnsureTodayOutcome {
+  readonly kind: 'opened-existing' | 'generated' | 'repaired-empty';
+  readonly date: LocalDate;
+  readonly notePath: string;
+}
 
 export interface EnsureTodayDependencies {
   readonly clock: Clock;
   readonly device: DevicePort;
 }
 
-const fromDevice = (
-  step: EnsureTodayStep,
+export const fromDeviceFailure = (
   failure: DeviceFailure,
-): EnsureTodayFailure =>
-  failure.code === undefined
-    ? {kind: 'ensure-today-failure', step, message: failure.message}
-    : {
-        kind: 'ensure-today-failure',
-        step,
-        message: failure.message,
-        code: failure.code,
-      };
+): EnsureTodayFailure => ({
+  ...failure,
+  kind: 'ensure-today-failure',
+});
 
-const notePathForDate = (date: LocalDate): string =>
-  `${DEFAULT_JOURNAL_ROOT}/${date}.note`;
-
-const missingIds = (actual: ReadonlySet<string>): ReadonlySet<string> =>
-  new Set(PAGE_COMPONENT_IDS.filter(componentId => !actual.has(componentId)));
-
-const hasAllIds = (actual: ReadonlySet<string>): boolean =>
-  PAGE_COMPONENT_IDS.every(componentId => actual.has(componentId));
-
-export const ensureTodayNote = async (
-  dependencies: EnsureTodayDependencies,
-): Promise<Result<EnsureTodayOutcome, EnsureTodayFailure>> => {
-  const access = await dependencies.device.ensureFileAccess();
+export const ensureTodayNote = async ({
+  clock,
+  device,
+}: EnsureTodayDependencies): Promise<
+  Result<EnsureTodayOutcome, EnsureTodayFailure>
+> => {
+  const access = await device.ensureFileAccess();
   if (!access.ok) {
-    return err(fromDevice('permissions', access.error));
+    return err(fromDeviceFailure(access.error));
   }
 
-  const descriptor = describeDate(dependencies.clock.now());
-  const lesson = lessonForDate(descriptor.date);
-  const notePath = notePathForDate(descriptor.date);
-  const exists = await dependencies.device.noteExists(notePath);
+  const descriptor = describeDate(clock.now());
+  const notePath = `${DEFAULT_JOURNAL_ROOT}/${descriptor.date}.note`;
+  const exists = await device.noteExists(notePath);
   if (!exists.ok) {
-    return err(fromDevice('check-note', exists.error));
+    return err(fromDeviceFailure(exists.error));
   }
 
+  let originalPageCount = 0;
+  let kind: EnsureTodayOutcome['kind'] = 'generated';
   if (exists.value) {
-    const markers = await dependencies.device.readGeneratedComponentIds(
-      notePath,
-      descriptor.date,
-    );
-    if (!markers.ok) {
-      return err(fromDevice('inspect-page', markers.error));
+    const inspection = await device.inspectNote(notePath);
+    if (!inspection.ok) {
+      return err(fromDeviceFailure(inspection.error));
     }
+    const decision = decideExistingNote(inspection.value);
+    if (!decision.ok) {
+      return err({
+        kind: 'ensure-today-failure',
+        step: 'inspect-note',
+        message: decision.error,
+      });
+    }
+    kind =
+      decision.value === 'open-existing' ? 'opened-existing' : 'repaired-empty';
+    originalPageCount = inspection.value.pageCount;
+  }
 
-    const hasPluginContent = PAGE_COMPONENT_IDS.some(componentId =>
-      markers.value.has(componentId),
-    );
-    if (!hasPluginContent) {
-      const inspection = await dependencies.device.inspectNotePage(notePath);
-      if (!inspection.ok) {
-        return err(fromDevice('inspect-page', inspection.error));
+  if (kind !== 'opened-existing') {
+    const template = await device.resolveTemplate();
+    if (!template.ok) {
+      return err(fromDeviceFailure(template.error));
+    }
+    if (kind === 'generated') {
+      const directory = await device.ensureNoteDirectory(DEFAULT_JOURNAL_ROOT);
+      if (!directory.ok) {
+        return err(fromDeviceFailure(directory.error));
       }
-
-      if (inspection.value.pageZeroElementCount > 0) {
-        const handedOff = await dependencies.device.handoffExistingNote(
-          notePath,
-        );
-        return handedOff.ok
-          ? ok({kind: 'opened-existing', date: descriptor.date, notePath})
-          : err(fromDevice('handoff', handedOff.error));
-      }
-
-      const repairedBlank = await dependencies.device.renderMissingPageComponents(
-        {
-          notePath,
-          date: descriptor.date,
-          fullDate: descriptor.fullDate,
-          lesson,
-        },
-        new Set(PAGE_COMPONENT_IDS),
-        inspection.value.pageCount === 1,
-      );
-      if (!repairedBlank.ok) {
-        return err(fromDevice('render-page', repairedBlank.error));
-      }
-
-      const handedOff = await dependencies.device.handoffGeneratedNote(notePath);
-      return handedOff.ok
-        ? ok({
-            kind: 'generated',
-            date: descriptor.date,
+    }
+    const created =
+      kind === 'generated'
+        ? await device.createNote(notePath, template.value)
+        : await device.insertTemplatePage(
             notePath,
-            exerciseId: lesson.id,
-          })
-        : err(fromDevice('handoff', handedOff.error));
+            template.value,
+            originalPageCount,
+          );
+    if (!created.ok) {
+      return err(fromDeviceFailure(created.error));
     }
 
-    if (hasAllIds(markers.value)) {
-      const handedOff = await dependencies.device.handoffExistingNote(notePath);
-      return handedOff.ok
-        ? ok({kind: 'opened-existing', date: descriptor.date, notePath})
-        : err(fromDevice('handoff', handedOff.error));
-    }
-
-    const repaired = await dependencies.device.renderMissingPageComponents(
-      {
-        notePath,
-        date: descriptor.date,
-        fullDate: descriptor.fullDate,
-        lesson,
-      },
-      missingIds(markers.value),
-      false,
-    );
-    if (!repaired.ok) {
-      return err(fromDevice('render-page', repaired.error));
-    }
-
-    const handedOff = await dependencies.device.handoffGeneratedNote(notePath);
-    return handedOff.ok
-      ? ok({
-          kind: 'generated',
-          date: descriptor.date,
-          notePath,
-          exerciseId: lesson.id,
-        })
-      : err(fromDevice('handoff', handedOff.error));
-  }
-
-  const directory = await dependencies.device.ensureNoteDirectory(
-    DEFAULT_JOURNAL_ROOT,
-  );
-  if (!directory.ok) {
-    return err(fromDevice('ensure-directory', directory.error));
-  }
-
-  const created = await dependencies.device.createNote(notePath);
-  if (!created.ok) {
-    return err(fromDevice('create-note', created.error));
-  }
-
-  const rendered = await dependencies.device.renderMissingPageComponents(
-    {
+    const inserted = await device.insertTodayText({
       notePath,
       date: descriptor.date,
       fullDate: descriptor.fullDate,
-      lesson,
-    },
-    new Set(PAGE_COMPONENT_IDS),
-    true,
-  );
-  if (!rendered.ok) {
-    return err(fromDevice('render-page', rendered.error));
-  }
-
-  const verified = await dependencies.device.readGeneratedComponentIds(
-    notePath,
-    descriptor.date,
-  );
-  if (!verified.ok) {
-    return err(fromDevice('verify-page', verified.error));
-  }
-  if (!hasAllIds(verified.value)) {
-    return err({
-      kind: 'ensure-today-failure',
-      step: 'verify-page',
-      message: 'The generated page is missing one or more required elements',
+      lesson: lessonForDate(descriptor.date),
     });
+    if (!inserted.ok) {
+      return err(fromDeviceFailure(inserted.error));
+    }
+
+    if (kind === 'repaired-empty') {
+      const removed = await device.removeEmptySeedPages(
+        notePath,
+        originalPageCount,
+      );
+      if (!removed.ok) {
+        return err(fromDeviceFailure(removed.error));
+      }
+    }
   }
 
-  const handedOff = await dependencies.device.handoffGeneratedNote(notePath);
-  return handedOff.ok
-    ? ok({
-        kind: 'generated',
-        date: descriptor.date,
-        notePath,
-        exerciseId: lesson.id,
-      })
-    : err(fromDevice('handoff', handedOff.error));
+  const closed = await device.closePluginView();
+  if (!closed.ok) {
+    return err(fromDeviceFailure(closed.error));
+  }
+  const opened = await device.openNote(notePath);
+  return opened.ok
+    ? ok({kind, date: descriptor.date, notePath})
+    : err(fromDeviceFailure(opened.error));
 };

@@ -5,11 +5,6 @@ export interface Size {
   readonly height: number;
 }
 
-export interface Point {
-  readonly x: number;
-  readonly y: number;
-}
-
 export interface Rect {
   readonly left: number;
   readonly top: number;
@@ -17,47 +12,57 @@ export interface Rect {
   readonly bottom: number;
 }
 
+export const PAGE_SIZES = {
+  nomad: {width: 1404, height: 1872},
+  manta: {width: 1920, height: 2560},
+} as const;
+
+export type TemplateId = keyof typeof PAGE_SIZES;
+
+export const TEMPLATE_FILES: Readonly<
+  Record<TemplateId, Readonly<{source: string; packaged: string}>>
+> = {
+  nomad: {
+    source: 'assets/today_nomad.png',
+    packaged: 'drawable-mdpi/assets_today_nomad.png',
+  },
+  manta: {
+    source: 'assets/today_manta.png',
+    packaged: 'drawable-mdpi/assets_today_manta.png',
+  },
+};
+
+export interface TemplateLabel {
+  readonly text: string;
+  readonly left: number;
+  readonly top: number;
+  readonly pixelSize: number;
+}
+
+export interface TemplateLayout {
+  readonly pageSize: Size;
+  readonly ink: readonly Rect[];
+  readonly labels: readonly TemplateLabel[];
+  readonly journal: Rect;
+}
+
 export interface TextSpec {
-  readonly kind: 'text';
-  readonly id: string;
+  readonly id: 'date' | 'lesson-title' | 'lesson-instruction' | 'lesson-sample';
   readonly rect: Rect;
   readonly text: string;
   readonly fontSize: number;
   readonly bold: boolean;
-  readonly align: 'left' | 'center';
 }
-
-export interface LineSpec {
-  readonly kind: 'line';
-  readonly id: string;
-  readonly from: Point;
-  readonly to: Point;
-  readonly width: number;
-}
-
-export interface BoxSpec {
-  readonly kind: 'box';
-  readonly id: string;
-  readonly rect: Rect;
-  readonly width: number;
-}
-
-export type PageElementSpec = TextSpec | LineSpec | BoxSpec;
 
 export interface TodayPageLayout {
   readonly pageSize: Size;
-  readonly sections: Readonly<{
-    header: Rect;
-    plan: Rect;
-    journal: Rect;
-    practice: Rect;
-  }>;
-  readonly elements: readonly PageElementSpec[];
+  readonly texts: readonly TextSpec[];
 }
 
 export type PageLayoutError =
-  | Readonly<{kind: 'invalid-size'; size: Size}>
-  | Readonly<{kind: 'content-overflow'; size: Size}>;
+  | Readonly<{kind: 'unsupported-size'; size: Size}>
+  | Readonly<{kind: 'invalid-text'; field: string}>
+  | Readonly<{kind: 'text-overflow'; field: string}>;
 
 export interface PageLayoutInput {
   readonly pageSize: Size;
@@ -67,264 +72,159 @@ export interface PageLayoutInput {
   readonly lessonSample: string;
 }
 
-const clamp = (value: number, minimum: number, maximum: number): number =>
-  Math.min(maximum, Math.max(minimum, value));
+const isPortraitPage = ({width, height}: Size): boolean =>
+  Number.isFinite(width) &&
+  Number.isFinite(height) &&
+  width >= 700 &&
+  height >= 900 &&
+  Math.abs(width / height - 3 / 4) < 0.001;
 
-const rect = (
+const scaledRect = (
+  size: Size,
   left: number,
   top: number,
   right: number,
   bottom: number,
-): Rect => ({left, top, right, bottom});
-
-const rectHeight = (value: Rect): number => value.bottom - value.top;
-const rectWidth = (value: Rect): number => value.right - value.left;
-
-const text = (
-  id: string,
-  bounds: Rect,
-  value: string,
-  fontSize: number,
-  bold = false,
-  align: 'left' | 'center' = 'left',
-): TextSpec => ({
-  kind: 'text',
-  id,
-  rect: bounds,
-  text: value,
-  fontSize,
-  bold,
-  align,
+): Rect => ({
+  left: Math.round((left * size.width) / PAGE_SIZES.nomad.width),
+  top: Math.round((top * size.height) / PAGE_SIZES.nomad.height),
+  right: Math.round((right * size.width) / PAGE_SIZES.nomad.width),
+  bottom: Math.round((bottom * size.height) / PAGE_SIZES.nomad.height),
 });
 
-const line = (
-  id: string,
-  from: Point,
-  to: Point,
-  width: number,
-): LineSpec => ({
-  kind: 'line',
-  id,
-  from,
-  to,
-  width,
-});
+// PNG generation, browser preview, and native TextBoxes share this coordinate grid.
+export const buildTemplateLayout = (
+  pageSize: Size,
+): Result<TemplateLayout, PageLayoutError> => {
+  if (!isPortraitPage(pageSize)) {
+    return err({kind: 'unsupported-size', size: pageSize});
+  }
 
-const box = (id: string, bounds: Rect, width: number): BoxSpec => ({
-  kind: 'box',
-  id,
-  rect: bounds,
-  width,
-});
+  const ink: Rect[] = [];
+  const fill = (
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+  ): void => {
+    ink.push(scaledRect(pageSize, left, top, right, bottom));
+  };
 
-const journalRuleIds = Array.from(
-  {length: 10},
-  (_, index) => `journal-rule-${index + 1}`,
-);
-const practiceRuleIds = Array.from(
-  {length: 4},
-  (_, index) => `practice-rule-${index + 1}`,
-);
-const planRowIds = Array.from({length: 3}, (_, index) => index + 1).flatMap(
-  row => [`plan-checkbox-${row}`, `plan-line-${row}`],
-);
+  for (const y of [224, 276, 328]) {
+    fill(96, y - 24, 120, y - 22);
+    fill(96, y - 2, 120, y);
+    fill(96, y - 24, 98, y);
+    fill(118, y - 24, 120, y);
+    fill(148, y - 1, 1308, y + 1);
+  }
+  for (let row = 0; row < 12; row += 1) {
+    fill(96, 448 + row * 80, 1308, 450 + row * 80);
+  }
+  for (const y of [1620, 1694, 1768, 1840]) {
+    fill(96, y, 1308, y + 2);
+  }
 
-export const PAGE_COMPONENT_IDS: readonly string[] = [
-  'title',
-  'plan-heading',
-  ...planRowIds,
-  'journal-heading',
-  ...journalRuleIds,
-  'practice-heading',
-  'practice-instruction',
-  'practice-sample',
-  ...practiceRuleIds,
-] as const;
+  const label = (text: string, top: number): TemplateLabel => ({
+    text,
+    left: Math.round((96 * pageSize.width) / PAGE_SIZES.nomad.width),
+    top: Math.round((top * pageSize.height) / PAGE_SIZES.nomad.height),
+    pixelSize: Math.max(
+      1,
+      Math.round((4 * pageSize.width) / PAGE_SIZES.nomad.width),
+    ),
+  });
 
-export const markerForComponent = (
-  date: string,
-  componentId: string,
-): string => `supernote-today:v1:${date}:${componentId}`;
+  return ok({
+    pageSize,
+    ink,
+    labels: [
+      label('PLAN', 160),
+      label('JOURNAL', 372),
+      label('CURSIVE - 10 MIN', 1372),
+    ],
+    journal: scaledRect(pageSize, 96, 360, 1308, 1340),
+  });
+};
+
+export const estimatedTextWidth = (text: string, fontSize: number): number =>
+  [...text].reduce((width, character) => {
+    const advance = /[MW@#%&]/.test(character)
+      ? 1.05
+      : /[ilI1.,'!:;| ]/.test(character)
+      ? 0.4
+      : /[A-Z]/.test(character)
+      ? 0.82
+      : 0.7;
+    return width + advance * fontSize;
+  }, 0);
 
 export const buildTodayPageLayout = (
   input: PageLayoutInput,
 ): Result<TodayPageLayout, PageLayoutError> => {
-  const {width, height} = input.pageSize;
-  if (
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0
-  ) {
-    return err({kind: 'invalid-size', size: input.pageSize});
+  if (!isPortraitPage(input.pageSize)) {
+    return err({kind: 'unsupported-size', size: input.pageSize});
   }
 
-  const left = clamp(width * 0.08, 96, 160);
-  const right = width - clamp(width * 0.045, 56, 104);
-  const top = clamp(height * 0.03, 48, 84);
-  const bottom = height - clamp(height * 0.03, 48, 84);
-  const gap = clamp(height * 0.012, 18, 32);
-  const headerHeight = clamp(height * 0.07, 104, 172);
-  const planHeight = clamp(height * 0.16, 260, 396);
-  const practiceHeight = clamp(height * 0.22, 372, 568);
+  const scale = input.pageSize.width / PAGE_SIZES.nomad.width;
+  const slots = [
+    {
+      id: 'date',
+      value: input.fullDate,
+      top: 48,
+      bottom: 132,
+      font: 42,
+      bold: true,
+    },
+    {
+      id: 'lesson-title',
+      value: input.lessonTitle,
+      top: 1420,
+      bottom: 1466,
+      font: 28,
+      bold: true,
+    },
+    {
+      id: 'lesson-instruction',
+      value: input.lessonInstruction,
+      top: 1470,
+      bottom: 1516,
+      font: 24,
+      bold: false,
+    },
+    {
+      id: 'lesson-sample',
+      value: input.lessonSample,
+      top: 1520,
+      bottom: 1570,
+      font: 30,
+      bold: false,
+    },
+  ] as const;
+  const texts: TextSpec[] = [];
 
-  const header = rect(left, top, right, top + headerHeight);
-  const plan = rect(
-    left,
-    header.bottom + gap,
-    right,
-    header.bottom + gap + planHeight,
-  );
-  const practice = rect(
-    left,
-    bottom - practiceHeight,
-    right,
-    bottom,
-  );
-  const journal = rect(left, plan.bottom + gap, right, practice.top - gap);
-
-  if (
-    rectWidth(journal) <= 0 ||
-    rectHeight(journal) <= 0 ||
-    journal.bottom <= journal.top
-  ) {
-    return err({kind: 'content-overflow', size: input.pageSize});
+  for (const slot of slots) {
+    if (!/^[\x20-\x7E]+$/.test(slot.value) || slot.value.trim().length === 0) {
+      return err({kind: 'invalid-text', field: slot.id});
+    }
+    const rect = scaledRect(input.pageSize, 96, slot.top, 1308, slot.bottom);
+    const availableWidth = rect.right - rect.left - 24 * scale;
+    const fontSize = Math.floor(
+      Math.min(
+        slot.font * scale,
+        availableWidth / estimatedTextWidth(slot.value, 1),
+      ),
+    );
+    if (fontSize < 20 * scale) {
+      return err({kind: 'text-overflow', field: slot.id});
+    }
+    texts.push({
+      id: slot.id,
+      rect,
+      text: slot.value,
+      fontSize,
+      bold: slot.bold,
+    });
   }
 
-  const contentWidth = right - left;
-  const titleFont = clamp(width * 0.03, 34, 54);
-  const headingFont = clamp(width * 0.019, 24, 36);
-  const bodyFont = clamp(width * 0.016, 20, 31);
-  const fineLineWidth = clamp(width * 0.00125, 1.5, 2.8);
-
-  const elements: PageElementSpec[] = [
-    text('title', header, input.fullDate, titleFont, true),
-  ];
-
-  const planHeadingHeight = clamp(rectHeight(plan) * 0.19, 48, 70);
-  elements.push(
-    text(
-      'plan-heading',
-      rect(plan.left, plan.top, plan.right, plan.top + planHeadingHeight),
-      'Daily plan',
-      headingFont,
-      true,
-    ),
-  );
-
-  const planRowsTop = plan.top + planHeadingHeight;
-  const planRowHeight = (plan.bottom - planRowsTop) / 3;
-  const checkboxSize = clamp(planRowHeight * 0.36, 30, 48);
-  for (let index = 0; index < 3; index += 1) {
-    const centerY = planRowsTop + planRowHeight * (index + 0.5);
-    const checkboxTop = centerY - checkboxSize / 2;
-    const checkboxLeft = plan.left + contentWidth * 0.012;
-    const row = index + 1;
-    elements.push(
-      box(
-        `plan-checkbox-${row}`,
-        rect(
-          checkboxLeft,
-          checkboxTop,
-          checkboxLeft + checkboxSize,
-          checkboxTop + checkboxSize,
-        ),
-        fineLineWidth,
-      ),
-      line(
-        `plan-line-${row}`,
-        {
-          x: checkboxLeft + checkboxSize + contentWidth * 0.025,
-          y: centerY + checkboxSize * 0.2,
-        },
-        {x: plan.right, y: centerY + checkboxSize * 0.2},
-        fineLineWidth,
-      ),
-    );
-  }
-
-  const journalHeadingHeight = clamp(rectHeight(journal) * 0.08, 48, 68);
-  elements.push(
-    text(
-      'journal-heading',
-      rect(
-        journal.left,
-        journal.top,
-        journal.right,
-        journal.top + journalHeadingHeight,
-      ),
-      'Journal',
-      headingFont,
-      true,
-    ),
-  );
-
-  const journalRulesTop = journal.top + journalHeadingHeight;
-  const journalRuleGap =
-    (journal.bottom - journalRulesTop) / journalRuleIds.length;
-  journalRuleIds.forEach((id, index) => {
-    const y = journalRulesTop + journalRuleGap * (index + 1);
-    elements.push(
-      line(id, {x: journal.left, y}, {x: journal.right, y}, fineLineWidth),
-    );
-  });
-
-  const practiceHeadingHeight = clamp(rectHeight(practice) * 0.14, 52, 76);
-  const instructionHeight = clamp(rectHeight(practice) * 0.17, 62, 96);
-  const sampleHeight = clamp(rectHeight(practice) * 0.16, 58, 90);
-  const practiceHeadingBottom = practice.top + practiceHeadingHeight;
-  const instructionBottom = practiceHeadingBottom + instructionHeight;
-  const sampleBottom = instructionBottom + sampleHeight;
-
-  elements.push(
-    text(
-      'practice-heading',
-      rect(
-        practice.left,
-        practice.top,
-        practice.right,
-        practiceHeadingBottom,
-      ),
-      `10-minute cursive: ${input.lessonTitle}`,
-      headingFont,
-      true,
-    ),
-    text(
-      'practice-instruction',
-      rect(
-        practice.left,
-        practiceHeadingBottom,
-        practice.right,
-        instructionBottom,
-      ),
-      input.lessonInstruction,
-      bodyFont,
-    ),
-    text(
-      'practice-sample',
-      rect(
-        practice.left,
-        instructionBottom,
-        practice.right,
-        sampleBottom,
-      ),
-      input.lessonSample,
-      bodyFont,
-    ),
-  );
-
-  const practiceRuleGap =
-    (practice.bottom - sampleBottom) / practiceRuleIds.length;
-  practiceRuleIds.forEach((id, index) => {
-    const y = sampleBottom + practiceRuleGap * (index + 1);
-    elements.push(
-      line(id, {x: practice.left, y}, {x: practice.right, y}, fineLineWidth),
-    );
-  });
-
-  return ok({
-    pageSize: input.pageSize,
-    sections: {header, plan, journal, practice},
-    elements,
-  });
+  return ok({pageSize: input.pageSize, texts});
 };

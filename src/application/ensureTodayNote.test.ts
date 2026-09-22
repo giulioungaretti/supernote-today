@@ -1,195 +1,150 @@
 import {ensureTodayNote} from './ensureTodayNote';
-import {parseLocalDate} from '../domain/localDate';
-import {PAGE_COMPONENT_IDS} from '../domain/pageLayout';
-import {err, ok, type Result} from '../domain/result';
-import type {Clock} from '../ports/clock';
-import type {
-  DeviceDiagnostics,
-  DeviceFailure,
-  DevicePort,
-  NotePageInspection,
-  TodayPageContent,
-} from '../ports/devicePort';
+import {err, ok} from '../domain/result';
+import {fakeDevice} from '../testSupport/fakeDevice';
 
-const fixedDate = new Date(2026, 8, 21, 8, 0, 0);
-const clock: Clock = {now: () => new Date(fixedDate)};
-const date = (() => {
-  const parsed = parseLocalDate('2026-09-21');
-  if (!parsed.ok) {
-    throw new Error('Test date is invalid');
-  }
-  return parsed.value;
-})();
-const notePath = `/storage/emulated/0/Note/Today/${date}.note`;
+const clock = {now: () => new Date(2026, 8, 21, 12)};
+const notePath = '/storage/emulated/0/Note/Today/2026-09-21.note';
 
-class FakeDevice implements DevicePort {
-  exists = false;
-  markers = new Set<string>();
-  created: string[] = [];
-  ensuredDirectories: string[] = [];
-  rendered: TodayPageContent[] = [];
-  existingHandoffs: string[] = [];
-  generatedHandoffs: string[] = [];
-  renderFailure: DeviceFailure | null = null;
-  inspection: NotePageInspection = {
-    pageCount: 1,
-    pageZeroElementCount: 1,
-  };
-  insertGeneratedPageFlags: boolean[] = [];
+test('creates with a bundled template, verifies file text, closes once then opens', async () => {
+  const device = fakeDevice();
+  const result = await ensureTodayNote({device, clock});
+  expect(result).toEqual(ok({kind: 'generated', date: '2026-09-21', notePath}));
+  expect(device.createNote).toHaveBeenCalledWith(
+    notePath,
+    '/installed/drawable-mdpi/assets_today_nomad.png',
+  );
+  expect(device.insertTodayText).toHaveBeenCalledWith(
+    expect.objectContaining({notePath, fullDate: 'Monday, September 21, 2026'}),
+  );
+  expect(device.createNote.mock.invocationCallOrder[0]).toBeLessThan(
+    device.insertTodayText.mock.invocationCallOrder[0] ?? 0,
+  );
+  expect(device.insertTodayText.mock.invocationCallOrder[0]).toBeLessThan(
+    device.closePluginView.mock.invocationCallOrder[0] ?? 0,
+  );
+  expect(device.closePluginView.mock.invocationCallOrder[0]).toBeLessThan(
+    device.openNote.mock.invocationCallOrder[0] ?? 0,
+  );
+  expect(device.closePluginView).toHaveBeenCalledTimes(1);
+  expect(device.openNote).toHaveBeenCalledWith(notePath);
+  expect(device.insertTemplatePage).not.toHaveBeenCalled();
+  expect(device.showPluginView).not.toHaveBeenCalled();
+});
 
-  ensureFileAccess = async (): Promise<Result<void, DeviceFailure>> =>
-    ok(undefined);
+test.each([[4], [0, 1], [1, 0], [0, 100], [4, 0]])(
+  'opens existing content unchanged: %j',
+  async (...counts: number[]) => {
+    const device = fakeDevice();
+    device.noteExists.mockResolvedValue(ok(true));
+    device.inspectNote.mockResolvedValue(
+      ok({pageCount: counts.length, elementCounts: counts}),
+    );
+    const result = await ensureTodayNote({device, clock});
+    expect(result.ok && result.value.kind).toBe('opened-existing');
+    expect(device.createNote).not.toHaveBeenCalled();
+    expect(device.resolveTemplate).not.toHaveBeenCalled();
+    expect(device.insertTemplatePage).not.toHaveBeenCalled();
+    expect(device.insertTodayText).not.toHaveBeenCalled();
+    expect(device.removeEmptySeedPages).not.toHaveBeenCalled();
+    expect(device.closePluginView).toHaveBeenCalledTimes(1);
+    expect(device.openNote).toHaveBeenCalledWith(notePath);
+  },
+);
 
-  ensureNoteDirectory = async (
-    path: string,
-  ): Promise<Result<void, DeviceFailure>> => {
-    this.ensuredDirectories.push(path);
-    return ok(undefined);
-  };
+test.each([1, 2])(
+  'repairs %i entirely empty pages before close/open',
+  async count => {
+    const device = fakeDevice();
+    device.noteExists.mockResolvedValue(ok(true));
+    device.inspectNote.mockResolvedValue(
+      ok({pageCount: count, elementCounts: Array<number>(count).fill(0)}),
+    );
+    const result = await ensureTodayNote({device, clock});
+    expect(result.ok && result.value.kind).toBe('repaired-empty');
+    expect(device.insertTemplatePage).toHaveBeenCalledWith(
+      notePath,
+      expect.any(String),
+      count,
+    );
+    expect(device.createNote).not.toHaveBeenCalled();
+    expect(device.removeEmptySeedPages).toHaveBeenCalledWith(notePath, count);
+    expect(device.insertTodayText.mock.invocationCallOrder[0]).toBeLessThan(
+      device.removeEmptySeedPages.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(
+      device.removeEmptySeedPages.mock.invocationCallOrder[0],
+    ).toBeLessThan(device.closePluginView.mock.invocationCallOrder[0] ?? 0);
+  },
+);
 
-  noteExists = async (): Promise<Result<boolean, DeviceFailure>> =>
-    ok(this.exists);
+test('leaves a longer archive note unchanged', async () => {
+  const device = fakeDevice();
+  device.noteExists.mockResolvedValue(ok(true));
+  device.inspectNote.mockResolvedValue(ok({pageCount: 3, elementCounts: []}));
+  expect((await ensureTodayNote({device, clock})).ok).toBe(true);
+  expect(device.insertTemplatePage).not.toHaveBeenCalled();
+});
 
-  createNote = async (
-    path: string,
-  ): Promise<Result<void, DeviceFailure>> => {
-    this.created.push(path);
-    return ok(undefined);
-  };
-
-  readGeneratedComponentIds = async (): Promise<
-    Result<ReadonlySet<string>, DeviceFailure>
-  > => ok(new Set(this.markers));
-
-  inspectNotePage = async (): Promise<
-    Result<NotePageInspection, DeviceFailure>
-  > => ok(this.inspection);
-
-  renderMissingPageComponents = async (
-    content: TodayPageContent,
-    missing: ReadonlySet<string>,
-    insertGeneratedPage: boolean,
-  ): Promise<Result<void, DeviceFailure>> => {
-    if (this.renderFailure !== null) {
-      return err(this.renderFailure);
-    }
-    this.rendered.push(content);
-    this.insertGeneratedPageFlags.push(insertGeneratedPage);
-    missing.forEach(componentId => this.markers.add(componentId));
-    return ok(undefined);
-  };
-
-  handoffGeneratedNote = async (
-    path: string,
-  ): Promise<Result<void, DeviceFailure>> => {
-    this.generatedHandoffs.push(path);
-    return ok(undefined);
-  };
-
-  handoffExistingNote = async (
-    path: string,
-  ): Promise<Result<void, DeviceFailure>> => {
-    this.existingHandoffs.push(path);
-    return ok(undefined);
-  };
-
-  closePluginView = async (): Promise<Result<void, DeviceFailure>> =>
-    ok(undefined);
-
-  showPluginView = async (): Promise<Result<void, DeviceFailure>> =>
-    ok(undefined);
-
-  diagnostics = async (): Promise<
-    Result<DeviceDiagnostics, DeviceFailure>
-  > => ok({deviceType: 4, deviceName: 'Nomad'});
-}
-
-describe('ensureTodayNote', () => {
-  it('opens an existing unmarked note untouched', async () => {
-    const device = new FakeDevice();
-    device.exists = true;
-
-    const result = await ensureTodayNote({clock, device});
-
-    expect(result).toEqual({
-      ok: true,
-      value: {kind: 'opened-existing', date, notePath},
-    });
-    expect(device.rendered).toHaveLength(0);
-    expect(device.existingHandoffs).toEqual([notePath]);
-  });
-
-  it('creates, renders, verifies, and hands off a new note', async () => {
-    const device = new FakeDevice();
-
-    const result = await ensureTodayNote({clock, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.created).toEqual([notePath]);
-    expect(device.ensuredDirectories).toEqual([
-      '/storage/emulated/0/Note/Today',
-    ]);
-    expect(device.rendered).toHaveLength(1);
-    expect(device.insertGeneratedPageFlags).toEqual([true]);
-    expect(device.generatedHandoffs).toEqual([notePath]);
-  });
-
-  it('repairs the blank one-page note created by the previous build', async () => {
-    const device = new FakeDevice();
-    device.exists = true;
-    device.inspection = {pageCount: 1, pageZeroElementCount: 0};
-
-    const result = await ensureTodayNote({clock, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.rendered).toHaveLength(1);
-    expect(device.insertGeneratedPageFlags).toEqual([true]);
-    expect(device.generatedHandoffs).toEqual([notePath]);
-  });
-
-  it('opens a complete generated note without redrawing it', async () => {
-    const device = new FakeDevice();
-    device.exists = true;
-    PAGE_COMPONENT_IDS.forEach(componentId => device.markers.add(componentId));
-
-    const result = await ensureTodayNote({clock, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.rendered).toHaveLength(0);
-    expect(device.existingHandoffs).toEqual([notePath]);
-  });
-
-  it('repairs only missing components when markers are partial', async () => {
-    const device = new FakeDevice();
-    device.exists = true;
-    device.markers.add(PAGE_COMPONENT_IDS[0] ?? 'title');
-
-    const result = await ensureTodayNote({clock, device});
-
-    expect(result.ok).toBe(true);
-    expect(device.rendered).toHaveLength(1);
-    expect(device.insertGeneratedPageFlags).toEqual([false]);
-    expect(device.generatedHandoffs).toEqual([notePath]);
-    expect(device.markers.size).toBe(PAGE_COMPONENT_IDS.length);
-  });
-
-  it('reports rendering failure without claiming success', async () => {
-    const device = new FakeDevice();
-    device.renderFailure = {
+test.each([
+  'ensureFileAccess',
+  'resolveTemplate',
+  'ensureNoteDirectory',
+  'createNote',
+  'insertTodayText',
+  'closePluginView',
+] as const)('does not open after %s fails', async operation => {
+  const device = fakeDevice();
+  device[operation].mockResolvedValue(
+    err({
       kind: 'device-failure',
-      step: 'insert-elements',
-      message: 'Insertion failed',
-    };
+      step: 'insert-text',
+      message: 'deliberate failure',
+    }),
+  );
+  const result = await ensureTodayNote({device, clock});
+  expect(result.ok).toBe(false);
+  expect(device.openNote).not.toHaveBeenCalled();
+});
 
-    const result = await ensureTodayNote({clock, device});
+test('does not remove seed pages or close after text verification fails', async () => {
+  const device = fakeDevice();
+  device.noteExists.mockResolvedValue(ok(true));
+  device.inspectNote.mockResolvedValue(
+    ok({pageCount: 2, elementCounts: [0, 0]}),
+  );
+  device.insertTodayText.mockResolvedValue(
+    err({
+      kind: 'device-failure',
+      step: 'verify-text',
+      message: 'Expected 4, found 0',
+    }),
+  );
+  expect((await ensureTodayNote({device, clock})).ok).toBe(false);
+  expect(device.removeEmptySeedPages).not.toHaveBeenCalled();
+  expect(device.closePluginView).not.toHaveBeenCalled();
+});
 
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        kind: 'ensure-today-failure',
-        step: 'render-page',
-        message: 'Insertion failed',
-      },
-    });
-  });
+test('fails safely if either page cannot be inspected', async () => {
+  const device = fakeDevice();
+  device.noteExists.mockResolvedValue(ok(true));
+  device.inspectNote.mockResolvedValue(
+    err({
+      kind: 'device-failure',
+      step: 'inspect-note',
+      message: 'Page 1 read failed',
+    }),
+  );
+  expect((await ensureTodayNote({device, clock})).ok).toBe(false);
+  expect(device.insertTemplatePage).not.toHaveBeenCalled();
+  expect(device.openNote).not.toHaveBeenCalled();
+});
+
+test('reopening the newly generated day never decorates twice', async () => {
+  const device = fakeDevice();
+  await ensureTodayNote({device, clock});
+  device.noteExists.mockResolvedValue(ok(true));
+  await ensureTodayNote({device, clock});
+  expect(device.createNote).toHaveBeenCalledTimes(1);
+  expect(device.insertTodayText).toHaveBeenCalledTimes(1);
+  expect(device.openNote).toHaveBeenCalledTimes(2);
 });

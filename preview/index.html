@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Supernote Today | Device preview</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">SUPERNOTE TODAY / v0.2</p>
+        <h1>A page for today.</h1>
+        <p>Plan a little. Write a lot. Practice for ten minutes.</p>
+      </header>
+      <div class="workspace">
+        <section class="controls" aria-label="Preview controls">
+          <h2>Device preview</h2>
+          <label for="device">Portrait page</label>
+          <select id="device">
+            <option value="nomad">Nomad / 1404 x 1872</option>
+            <option value="manta">Manta / 1920 x 2560</option>
+          </select>
+          <label for="date">Journal date</label>
+          <input id="date" type="date" min="1900-01-01" max="9999-12-31" />
+          <div class="pair">
+            <button id="previous-day">Previous day</button>
+            <button id="next-day">Next day</button>
+          </div>
+          <label>Practice</label>
+          <p id="lesson" class="lesson"></p>
+          <div class="pair">
+            <button id="previous-lesson">Previous lesson</button>
+            <button id="next-lesson">Next lesson</button>
+          </div>
+          <button id="scheduled-lesson">Use date's lesson</button>
+          <p class="help">
+            Lesson browsing is preview-only. The installed plugin always uses
+            the date's deterministic lesson.
+          </p>
+          <hr />
+          <label for="flow">One-tap flow illustration</label>
+          <select id="flow">
+            <option value="page">Generated / existing native page</option>
+            <option value="opening">Opening in background (held)</option>
+            <option value="permission">Error: file permission</option>
+            <option value="template">Error: bundled template missing</option>
+            <option value="text">Error: text verification</option>
+            <option value="open">Error: native file open</option>
+          </select>
+          <button id="open-today" class="primary">Today - one tap</button>
+          <p id="status" role="status" aria-live="polite"></p>
+          <p class="help">
+            Opening is a status illustration outside the device, not a plugin
+            splash screen. Success goes straight to native Notes.
+          </p>
+        </section>
+        <section class="preview" aria-label="Native page illustration">
+          <div class="device-frame">
+            <div id="screen" class="screen" data-state="page">
+              <svg
+                id="page"
+                xmlns="http://www.w3.org/2000/svg"
+                role="img"
+                aria-label="Today page using the bundled PNG template"></svg>
+              <section id="error" class="error-screen" hidden>
+                <p class="eyebrow">TODAY COULD NOT OPEN</p>
+                <h2 id="error-step"></h2>
+                <p id="error-message"></p>
+                <div class="pair">
+                  <button id="retry" class="primary">Retry</button>
+                  <button id="settings">Settings</button>
+                  <button id="close">Close</button>
+                </div>
+              </section>
+            </div>
+          </div>
+          <p id="filename" class="caption"></p>
+          <p class="caption">
+            <a id="template-link" target="_blank" rel="noreferrer"
+              >Inspect the exact bundled PNG</a
+            >
+          </p>
+        </section>
+      </div>
+      <footer>
+        <strong>A validation surface, not an emulator.</strong>
+        This uses the plugin's actual PNG, date, curriculum and text
+        coordinates. Browser fonts may differ from native TextBoxes. PluginHost,
+        permissions, template loading, native handwriting and file operations
+        are not emulated. No preview control changes your Supernote or any
+        journal file.
+      </footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

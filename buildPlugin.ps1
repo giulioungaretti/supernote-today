@@ -1145,6 +1145,11 @@ function Main {
     $projectRoot = Get-Location
     Write-ColorOutput "Project root directory: $projectRoot" 'Green'
 
+    & npm run templates:check
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Bundled PNG templates do not match the shared layout'
+    }
+
     # Step 1: Check if build/generated directory exists, create if not
     Write-ColorOutput '=== Step 1: Check build/generated directory ===' 'Blue'
     $packageInfo = Get-PackageInfo -ProjectRoot $projectRoot

@@ -1,22 +1,30 @@
+import {Image} from 'react-native';
 import {
+  Element,
   FileUtils,
   PluginCommAPI,
   PluginFileAPI,
   PluginManager,
+  TextBox,
 } from 'sn-plugin-lib';
 
+import {
+  decideExistingNote,
+  type NoteInspection,
+} from '../../domain/noteDecision';
+import {
+  buildTodayPageLayout,
+  TEMPLATE_FILES,
+  type Size,
+} from '../../domain/pageLayout';
 import {err, ok, type Result} from '../../domain/result';
 import type {
-  DeviceDiagnostics,
   DeviceFailure,
   DevicePort,
-  NotePageInspection,
+  DeviceStep,
+  TodayPageContent,
 } from '../../ports/devicePort';
 import {ensureFileAccess} from './permissions';
-import {
-  readGeneratedComponentIds,
-  renderMissingPageComponents,
-} from './noteRenderer';
 import {
   isRecordValue,
   readSdkBoolean,
@@ -24,361 +32,489 @@ import {
   sdkException,
   type SdkFailure,
 } from './sdkResponse';
+import {templatePathCandidates} from './templatePaths';
 
-interface TemplateCandidate {
-  readonly name: string;
-  readonly vUri: string;
-}
+const failure = (step: DeviceStep, message: string): DeviceFailure => ({
+  kind: 'device-failure',
+  step,
+  message,
+});
 
-const normalizePath = (value: string): string =>
-  value.replace(/\\/g, '/').replace(/\/+$/g, '');
+const fromSdk = (step: DeviceStep, problem: SdkFailure): DeviceFailure => ({
+  kind: 'device-failure',
+  step,
+  message: `${problem.operation}: ${problem.message}`,
+  ...(problem.code === undefined ? {} : {code: problem.code}),
+});
 
-const toDeviceFailure = (
-  step: DeviceFailure['step'],
-  failure: SdkFailure,
-): DeviceFailure =>
-  failure.code === undefined
-    ? {kind: 'device-failure', step, message: failure.message}
-    : {
-        kind: 'device-failure',
-        step,
-        message: failure.message,
-        code: failure.code,
-      };
-
-const isString = (value: unknown): value is string =>
-  typeof value === 'string' && value.length > 0;
-
-const templateFromUnknown = (value: unknown): TemplateCandidate | null => {
-  if (!isRecordValue(value) || typeof value.name !== 'string') {
-    return null;
+const sdkValue = async <Value>(
+  step: DeviceStep,
+  operation: string,
+  action: () => Promise<unknown>,
+  guard: (value: unknown) => value is Value,
+): Promise<Result<Value, DeviceFailure>> => {
+  try {
+    const result = readSdkResult(operation, await action(), guard);
+    return result.ok ? result : err(fromSdk(step, result.error));
+  } catch (error: unknown) {
+    return err(fromSdk(step, sdkException(operation, error)));
   }
-
-  return {
-    name: value.name,
-    vUri: typeof value.vUri === 'string' ? value.vUri : '',
-  };
 };
 
-const extractTemplates = (value: unknown): readonly TemplateCandidate[] => {
-  const direct = Array.isArray(value) ? value : null;
-  const wrapped =
-    isRecordValue(value) && value.success === true && Array.isArray(value.result)
-      ? value.result
-      : null;
-  const source = direct ?? wrapped ?? [];
-
-  return source
-    .map(templateFromUnknown)
-    .filter((template): template is TemplateCandidate => template !== null);
+const sdkBoolean = async (
+  step: DeviceStep,
+  operation: string,
+  action: () => Promise<unknown>,
+): Promise<Result<void, DeviceFailure>> => {
+  try {
+    const result = readSdkBoolean(operation, await action());
+    return result.ok ? result : err(fromSdk(step, result.error));
+  } catch (error: unknown) {
+    return err(fromSdk(step, sdkException(operation, error)));
+  }
 };
 
-const blankTemplateCandidates = async (): Promise<readonly string[]> => {
-  const candidates = ['style_white'];
-  const raw = await PluginCommAPI.getNoteSystemTemplates();
-  const discovered = extractTemplates(raw).filter(template =>
-    /white|blank|plain/i.test(`${template.name} ${template.vUri}`),
+const directBoolean = async (
+  step: DeviceStep,
+  operation: string,
+  action: () => Promise<unknown>,
+): Promise<Result<void, DeviceFailure>> => {
+  try {
+    return (await action()) === true
+      ? ok(undefined)
+      : err(
+          failure(
+            step,
+            `${operation} did not succeed. Check Plugin Preview firmware and file permissions.`,
+          ),
+        );
+  } catch (error: unknown) {
+    return err(fromSdk(step, sdkException(operation, error)));
+  }
+};
+
+const isCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const isPageCount = (value: unknown): value is number =>
+  isCount(value) && value > 0;
+const isSize = (value: unknown): value is Size =>
+  isRecordValue(value) &&
+  typeof value.width === 'number' &&
+  typeof value.height === 'number';
+
+const pageCount = (path: string): Promise<Result<number, DeviceFailure>> =>
+  sdkValue(
+    'inspect-note',
+    'getNoteTotalPageNum',
+    () => PluginFileAPI.getNoteTotalPageNum(path),
+    isPageCount,
   );
 
-  for (const template of discovered) {
-    candidates.push(template.name);
-    if (template.vUri.length > 0) {
-      candidates.push(template.vUri);
-    }
-  }
+const elementCount = (
+  path: string,
+  page: number,
+): Promise<Result<number, DeviceFailure>> =>
+  sdkValue(
+    'inspect-note',
+    `getElementCounts(page ${page})`,
+    () => PluginFileAPI.getElementCounts(path, page),
+    isCount,
+  );
 
-  return [...new Set(candidates)];
+const noteExists: DevicePort['noteExists'] = async path => {
+  try {
+    const exists: unknown = await FileUtils.exists(path);
+    return typeof exists === 'boolean'
+      ? ok(exists)
+      : err(
+          failure(
+            'check-note',
+            'FileUtils.exists returned an invalid result. No note was changed.',
+          ),
+        );
+  } catch (error: unknown) {
+    return err(fromSdk('check-note', sdkException('FileUtils.exists', error)));
+  }
 };
 
-const createNote = async (
-  notePath: string,
-): Promise<Result<void, DeviceFailure>> => {
-  let candidates: readonly string[];
-  try {
-    candidates = await blankTemplateCandidates();
-  } catch (error: unknown) {
-    return err(
-      toDeviceFailure(
-        'templates',
-        sdkException('getNoteSystemTemplates', error),
-      ),
-    );
+const inspectNote = async (
+  path: string,
+): Promise<Result<NoteInspection, DeviceFailure>> => {
+  const count = await pageCount(path);
+  if (!count.ok) {
+    return count;
   }
-
-  let lastFailure: DeviceFailure = {
-    kind: 'device-failure',
-    step: 'create-note',
-    message: 'No blank note template was accepted by the device',
-  };
-
-  for (const template of candidates) {
-    try {
-      const parsed = readSdkBoolean(
-        'createNote',
-        await PluginFileAPI.createNote({
-          notePath,
-          template,
-          mode: 0,
-          isPortrait: true,
-        }),
-      );
-      if (parsed.ok) {
-        return parsed;
+  const counts: number[] = [];
+  if (count.value <= 2) {
+    for (let page = 0; page < count.value; page += 1) {
+      const elements = await elementCount(path, page);
+      if (!elements.ok) {
+        return elements;
       }
-      lastFailure = toDeviceFailure('create-note', parsed.error);
-    } catch (error: unknown) {
-      lastFailure = toDeviceFailure(
-        'create-note',
-        sdkException('createNote', error),
+      counts.push(elements.value);
+    }
+  }
+  return ok({pageCount: count.value, elementCounts: counts});
+};
+
+const resolveTemplate: DevicePort['resolveTemplate'] = async () => {
+  try {
+    const device = await PluginManager.getDeviceType();
+    if (device !== 4 && device !== 5) {
+      return err(
+        failure(
+          'template',
+          `Device type ${device} has no bundled template. v0.2 supports Nomad and Manta portrait notes.`,
+        ),
       );
     }
-  }
-
-  return err(lastFailure);
-};
-
-const ensureNoteDirectory = async (
-  absolutePath: string,
-): Promise<Result<void, DeviceFailure>> => {
-  try {
-    if (await FileUtils.exists(absolutePath)) {
-      return ok(undefined);
+    const template = TEMPLATE_FILES[device === 4 ? 'nomad' : 'manta'];
+    const uri =
+      device === 4
+        ? Image.resolveAssetSource(require('../../../assets/today_nomad.png'))
+            ?.uri
+        : Image.resolveAssetSource(require('../../../assets/today_manta.png'))
+            ?.uri;
+    const issues: string[] = [];
+    let directory: string | null | undefined;
+    try {
+      directory = await PluginManager.getPluginDirPath();
+    } catch (error: unknown) {
+      issues.push(sdkException('getPluginDirPath', error).message);
     }
-    const created = await FileUtils.makeDir(absolutePath);
-    return created
-      ? ok(undefined)
-      : err({
-          kind: 'device-failure',
-          step: 'create-note',
-          message: `Could not create journal directory: ${absolutePath}`,
-        });
-  } catch (error: unknown) {
-    return err({
-      kind: 'device-failure',
-      step: 'create-note',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'Could not create the journal directory',
-    });
-  }
-};
-
-const noteExists = async (
-  absolutePath: string,
-): Promise<Result<boolean, DeviceFailure>> => {
-  try {
-    return ok(await FileUtils.exists(absolutePath));
-  } catch (error: unknown) {
-    return err({
-      kind: 'device-failure',
-      step: 'read-elements',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'Could not check whether the dated note exists',
-    });
-  }
-};
-
-const isNonNegativeInteger = (value: unknown): value is number =>
-  typeof value === 'number' &&
-  Number.isInteger(value) &&
-  value >= 0;
-
-const inspectNotePage = async (
-  notePath: string,
-): Promise<Result<NotePageInspection, DeviceFailure>> => {
-  try {
-    const pageCount = readSdkResult(
-      'getNoteTotalPageNum',
-      await PluginFileAPI.getNoteTotalPageNum(notePath),
-      isNonNegativeInteger,
+    const candidates = templatePathCandidates(
+      uri,
+      directory,
+      template.packaged,
     );
-    if (!pageCount.ok) {
-      return err(toDeviceFailure('read-elements', pageCount.error));
+    for (const candidate of candidates) {
+      const exists = await noteExists(candidate);
+      if (exists.ok && exists.value) {
+        return ok(candidate);
+      }
+      issues.push(
+        `${candidate}: ${exists.ok ? 'not found' : exists.error.message}`,
+      );
     }
-
-    const elementCount = readSdkResult(
-      'getElementCounts',
-      await PluginFileAPI.getElementCounts(notePath, 0),
-      isNonNegativeInteger,
-    );
-    if (!elementCount.ok) {
-      return err(toDeviceFailure('read-elements', elementCount.error));
-    }
-
-    return ok({
-      pageCount: pageCount.value,
-      pageZeroElementCount: elementCount.value,
-    });
-  } catch (error: unknown) {
     return err(
-      toDeviceFailure(
-        'read-elements',
-        sdkException('inspectNotePage', error),
+      failure(
+        'template',
+        `Bundled PNG not found. Reinstall the complete v0.2 .snplg. Checked the resolved local image and installation directory. ${
+          issues.join('; ') ||
+          `Image URI: ${uri ?? 'unavailable'}; plugin directory unavailable.`
+        }`,
+      ),
+    );
+  } catch (error: unknown) {
+    return err(fromSdk('template', sdkException('resolve bundled PNG', error)));
+  }
+};
+
+const createNote: DevicePort['createNote'] = async (path, template) => {
+  const exists = await noteExists(path);
+  if (!exists.ok) {
+    return exists;
+  }
+  if (exists.value) {
+    return err(
+      failure(
+        'create-note',
+        'The dated note appeared during creation. It was not overwritten. Retry to open it.',
       ),
     );
   }
-};
-
-const closePluginView = async (): Promise<Result<void, DeviceFailure>> => {
-  try {
-    return (await PluginManager.closePluginView())
-      ? ok(undefined)
-      : err({
-          kind: 'device-failure',
-          step: 'close-view',
-          message: 'Supernote did not close the plugin view',
-        });
-  } catch (error: unknown) {
-    return err({
-      kind: 'device-failure',
-      step: 'close-view',
-      message:
-        error instanceof Error ? error.message : 'Closing the plugin view failed',
-    });
+  const created = await sdkBoolean('create-note', 'createNote', () =>
+    PluginFileAPI.createNote({
+      notePath: path,
+      template,
+      mode: 0,
+      isPortrait: true,
+    }),
+  );
+  if (!created.ok) {
+    return created;
   }
+  const count = await pageCount(path);
+  return count.ok && count.value === 1
+    ? ok(undefined)
+    : count.ok
+    ? err(
+        failure(
+          'create-note',
+          'The new note did not contain exactly one page. No text was inserted.',
+        ),
+      )
+    : count;
 };
 
-const showPluginView = async (): Promise<Result<void, DeviceFailure>> => {
-  try {
-    return (await PluginManager.showPluginView())
-      ? ok(undefined)
-      : err({
-          kind: 'device-failure',
-          step: 'show-view',
-          message: 'Supernote did not show the plugin view',
-        });
-  } catch (error: unknown) {
-    return err({
-      kind: 'device-failure',
-      step: 'show-view',
-      message:
-        error instanceof Error ? error.message : 'Showing the plugin view failed',
-    });
+const insertTemplatePage: DevicePort['insertTemplatePage'] = async (
+  path,
+  template,
+  originalPageCount,
+) => {
+  const inspection = await inspectNote(path);
+  if (!inspection.ok) {
+    return inspection;
   }
-};
-
-const currentFilePath = async (): Promise<Result<string, DeviceFailure>> => {
-  try {
-    const parsed = readSdkResult(
-      'getCurrentFilePath',
-      await PluginCommAPI.getCurrentFilePath(),
-      isString,
-    );
-    return parsed.ok
-      ? parsed
-      : err(toDeviceFailure('current-file', parsed.error));
-  } catch (error: unknown) {
+  const decision = decideExistingNote(inspection.value);
+  if (
+    !decision.ok ||
+    decision.value !== 'repair-empty' ||
+    inspection.value.pageCount !== originalPageCount
+  ) {
     return err(
-      toDeviceFailure(
-        'current-file',
-        sdkException('getCurrentFilePath', error),
+      failure(
+        'insert-page',
+        'The note changed or contains content. Repair stopped without changing it.',
       ),
     );
   }
+  const inserted = await sdkBoolean('insert-page', 'insertNotePage', () =>
+    PluginFileAPI.insertNotePage({notePath: path, page: 0, template}),
+  );
+  if (!inserted.ok) {
+    return inserted;
+  }
+  const count = await pageCount(path);
+  return count.ok && count.value === originalPageCount + 1
+    ? ok(undefined)
+    : count.ok
+    ? err(
+        failure(
+          'insert-page',
+          'The template page count could not be verified. No old pages were removed.',
+        ),
+      )
+    : count;
 };
 
-const handoffGeneratedNote = async (
-  notePath: string,
+interface CachedTextElement extends Record<string, unknown> {
+  uuid: string;
+  type: number;
+  pageNum?: number;
+  layerNum?: number;
+  textBox?: TextBox;
+}
+
+const isCachedElement = (value: unknown): value is CachedTextElement =>
+  isRecordValue(value) &&
+  typeof value.uuid === 'string' &&
+  value.uuid.length > 0 &&
+  typeof value.type === 'number';
+
+const insertTodayText = async (
+  content: TodayPageContent,
 ): Promise<Result<void, DeviceFailure>> => {
-  const current = await currentFilePath();
-  if (!current.ok) {
-    return current;
+  const size = await sdkValue(
+    'page-size',
+    'getPageSize',
+    () => PluginFileAPI.getPageSize(content.notePath, 0),
+    isSize,
+  );
+  if (!size.ok) {
+    return size;
   }
-  if (normalizePath(current.value) !== normalizePath(notePath)) {
-    return err({
-      kind: 'device-failure',
-      step: 'current-file',
-      message: 'The generated note is not the current native NOTE file',
-    });
-  }
-
-  return closePluginView();
-};
-
-const handoffExistingNote = async (
-  notePath: string,
-): Promise<Result<void, DeviceFailure>> => {
-  const current = await currentFilePath();
-  if (current.ok && normalizePath(current.value) === normalizePath(notePath)) {
-    return closePluginView();
-  }
-
-  const closed = await closePluginView();
-  if (!closed.ok) {
-    return closed;
-  }
-
-  try {
-    const opened = readSdkBoolean(
-      'openFile',
-      await PluginFileAPI.openFile(notePath, 0),
-    );
-    if (opened.ok) {
-      return opened;
-    }
-
-    await showPluginView();
-    return err(toDeviceFailure('open-existing', opened.error));
-  } catch (error: unknown) {
-    await showPluginView();
+  const layout = buildTodayPageLayout({
+    pageSize: size.value,
+    fullDate: content.fullDate,
+    lessonTitle: content.lesson.title,
+    lessonInstruction: content.lesson.instruction,
+    lessonSample: content.lesson.sample,
+  });
+  if (!layout.ok) {
     return err(
-      toDeviceFailure('open-existing', sdkException('openFile', error)),
+      failure(
+        'page-size',
+        `Text layout failed (${layout.error.kind}). Only portrait 3:4 notes are supported. No text was inserted.`,
+      ),
     );
+  }
+  const before = await elementCount(content.notePath, 0);
+  if (!before.ok) {
+    return before;
+  }
+  if (before.value !== 0) {
+    return err(
+      failure(
+        'insert-text',
+        'Page 0 now contains content. It was not modified. Retry to open the existing note.',
+      ),
+    );
+  }
+
+  const elements: CachedTextElement[] = [];
+  try {
+    for (const spec of layout.value.texts) {
+      const allocated = await sdkValue(
+        'create-element',
+        'createElement(TYPE_TEXT)',
+        () => PluginCommAPI.createElement(Element.TYPE_TEXT),
+        isCachedElement,
+      );
+      if (!allocated.ok) {
+        return allocated;
+      }
+      const element = allocated.value;
+      elements.push(element);
+      const box = new TextBox();
+      box.fontSize = spec.fontSize;
+      box.fontPath = null;
+      box.textContentFull = spec.text;
+      box.textRect = {...spec.rect};
+      box.textDigestData = null;
+      box.textAlign = 0;
+      box.textBold = spec.bold ? 1 : 0;
+      box.textItalics = 0;
+      box.textFrameWidthType = 0;
+      box.textFrameStyle = 0;
+      box.textEditable = 0;
+      element.pageNum = 0;
+      element.layerNum = 0;
+      element.textBox = box;
+    }
+    const inserted = await sdkBoolean('insert-text', 'insertElements', () =>
+      PluginFileAPI.insertElements(content.notePath, 0, elements),
+    );
+    if (!inserted.ok) {
+      return inserted;
+    }
+    // File-level insertion is already persisted. Saving a current editor here could overwrite it.
+    const after = await elementCount(content.notePath, 0);
+    if (!after.ok) {
+      return after;
+    }
+    return after.value === elements.length
+      ? ok(undefined)
+      : err(
+          failure(
+            'verify-text',
+            `Text insertion was incomplete: expected ${elements.length} elements, found ${after.value}. No old pages were removed. Do not delete a note containing handwriting.`,
+          ),
+        );
+  } finally {
+    for (const element of elements) {
+      PluginCommAPI.recycleElement(element.uuid);
+    }
   }
 };
 
-const DEVICE_NAMES: Readonly<Record<number, string>> = {
-  0: 'A5',
-  1: 'A6',
-  2: 'A6 X',
-  3: 'A5 X',
-  4: 'Nomad',
-  5: 'Manta',
-};
-
-const diagnostics = async (): Promise<
-  Result<DeviceDiagnostics, DeviceFailure>
-> => {
-  try {
-    const deviceType = await PluginManager.getDeviceType();
-    if (!Number.isInteger(deviceType)) {
+const removeEmptySeedPages: DevicePort['removeEmptySeedPages'] = async (
+  path,
+  originalPageCount,
+) => {
+  if (originalPageCount !== 1 && originalPageCount !== 2) {
+    return err(
+      failure(
+        'remove-empty-pages',
+        'Only one or two verified empty seed pages may be removed.',
+      ),
+    );
+  }
+  for (let page = originalPageCount; page >= 1; page -= 1) {
+    const count = await pageCount(path);
+    if (!count.ok) {
+      return count;
+    }
+    if (count.value !== page + 1) {
+      return err(
+        failure(
+          'remove-empty-pages',
+          'Page count changed during repair. Remaining pages were kept.',
+        ),
+      );
+    }
+    // Recheck all remaining seed pages before each destructive operation.
+    for (let seed = 1; seed <= page; seed += 1) {
+      const elements = await elementCount(path, seed);
+      if (!elements.ok) {
+        return elements;
+      }
+      if (elements.value !== 0) {
+        return err(
+          failure(
+            'remove-empty-pages',
+            `Page ${seed + 1} contains content. No further pages were removed.`,
+          ),
+        );
+      }
+    }
+    const removed = await sdkBoolean(
+      'remove-empty-pages',
+      `removeNotePage(${page})`,
+      () => PluginFileAPI.removeNotePage(path, page),
+    );
+    if (!removed.ok) {
       return err({
-        kind: 'device-failure',
-        step: 'device-info',
-        message: 'Supernote returned an invalid device type',
+        ...removed.error,
+        message: `${removed.error.message}. The new page is retained; inspect remaining blank pages in native Notes.`,
       });
     }
-
-    return ok({
-      deviceType,
-      deviceName: DEVICE_NAMES[deviceType] ?? `Unknown (${deviceType})`,
-    });
-  } catch (error: unknown) {
-    return err({
-      kind: 'device-failure',
-      step: 'device-info',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'Could not read device information',
-    });
+    const after = await pageCount(path);
+    if (!after.ok) {
+      return after;
+    }
+    if (after.value !== page) {
+      return err(
+        failure(
+          'remove-empty-pages',
+          'Page deletion could not be verified. No further pages were removed.',
+        ),
+      );
+    }
   }
+  return ok(undefined);
 };
 
 export const supernoteDeviceAdapter: DevicePort = {
   ensureFileAccess,
-  ensureNoteDirectory,
   noteExists,
+  resolveTemplate,
   createNote,
-  readGeneratedComponentIds,
-  inspectNotePage,
-  renderMissingPageComponents,
-  handoffGeneratedNote,
-  handoffExistingNote,
-  closePluginView,
-  showPluginView,
-  diagnostics,
+  inspectNote,
+  insertTemplatePage,
+  insertTodayText,
+  removeEmptySeedPages,
+  ensureNoteDirectory: async path => {
+    const exists = await noteExists(path);
+    return !exists.ok
+      ? exists
+      : exists.value
+      ? ok(undefined)
+      : directBoolean('ensure-directory', 'Create journal directory', () =>
+          FileUtils.makeDir(path),
+        );
+  },
+  closePluginView: () =>
+    directBoolean('close-view', 'Close plugin view', () =>
+      PluginManager.closePluginView(),
+    ),
+  openNote: path =>
+    sdkBoolean('open-note', 'openFile', () => PluginFileAPI.openFile(path, 0)),
+  showPluginView: () =>
+    directBoolean('show-view', 'Show plugin view', () =>
+      PluginManager.showPluginView(),
+    ),
+  diagnostics: async () => {
+    try {
+      const deviceType = await PluginManager.getDeviceType();
+      return Number.isInteger(deviceType)
+        ? ok({
+            deviceType,
+            deviceName:
+              deviceType === 4
+                ? 'Nomad'
+                : deviceType === 5
+                ? 'Manta'
+                : `Unsupported (${deviceType})`,
+          })
+        : err(
+            failure(
+              'device-info',
+              'Supernote returned an invalid device type.',
+            ),
+          );
+    } catch (error: unknown) {
+      return err(fromSdk('device-info', sdkException('getDeviceType', error)));
+    }
+  },
 };

@@ -46,6 +46,12 @@ jobs:
       - name: Test
         run: npm test -- --runInBand
 
+      - name: Verify shared PNG templates
+        run: npm run templates:check
+
+      - name: Build device preview
+        run: npm run preview:build
+
       - name: Build plugin package
         shell: pwsh
         run: |
@@ -54,41 +60,13 @@ jobs:
             throw "Plugin packaging failed"
           }
 
-      - name: Verify TypeScript-only plugin package
+      - name: Verify installable package and template pixels
         shell: pwsh
         run: |
-          $plugin = "build\outputs\SupernoteToday.snplg"
-          $generatedConfig = "build\generated\PluginConfig.json"
-          if (-not (Test-Path $plugin)) {
-            throw "Expected plugin package was not produced: $plugin"
+          & .\scripts\verifyPlugin.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Plugin package verification failed"
           }
-          $config = Get-Content $generatedConfig -Raw | ConvertFrom-Json
-          if ($config.PSObject.Properties.Name -contains "nativeCodePackage") {
-            throw "TypeScript-only package unexpectedly declares nativeCodePackage"
-          }
-          if ($config.PSObject.Properties.Name -contains "reactPackages") {
-            throw "TypeScript-only package unexpectedly declares reactPackages"
-          }
-          if (Test-Path "build\generated\app.npk") {
-            throw "TypeScript-only package unexpectedly contains app.npk"
-          }
-
-          $verification = Join-Path $env:RUNNER_TEMP "supernote-today-package"
-          New-Item -ItemType Directory -Path $verification | Out-Null
-          $zip = Join-Path $verification "SupernoteToday.zip"
-          Copy-Item $plugin $zip
-          Expand-Archive -Path $zip -DestinationPath (Join-Path $verification "contents")
-          foreach ($entry in @("PluginConfig.json", "SupernoteToday.bundle", "icon.png")) {
-            if (-not (Test-Path (Join-Path $verification "contents\$entry"))) {
-              throw "Packaged plugin is missing $entry"
-            }
-          }
-          if (Test-Path (Join-Path $verification "contents\app.npk")) {
-            throw "Packaged plugin unexpectedly contains app.npk"
-          }
-
-          (Get-FileHash $plugin -Algorithm SHA256).Hash |
-            Set-Content "build\outputs\SupernoteToday.snplg.sha256"
 
       - name: Upload installable plugin
         uses: actions/upload-artifact@v4

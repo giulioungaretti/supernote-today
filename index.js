@@ -7,7 +7,7 @@ import App from './App';
 import {name as appName} from './app.json';
 import {PluginManager} from 'sn-plugin-lib';
 import {TODAY_TOOLBAR_BUTTON_ID} from './src/runtime/buttonIds';
-import {publishEntryIntent} from './src/runtime/entryState';
+import {todayController} from './src/runtime/pluginRuntime';
 
 AppRegistry.registerComponent(appName, () => App);
 
@@ -18,41 +18,34 @@ const initializePlugin = async () => {
     id: TODAY_TOOLBAR_BUTTON_ID,
     name: 'Today',
     icon: Image.resolveAssetSource(require('./assets/icon.png')).uri,
-    showType: 1,
+    showType: 0,
   });
   if (!toolbarRegistered) {
-    console.error('Today toolbar registration failed');
+    throw new Error(
+      'Today toolbar registration failed. Check Plugin Preview firmware.',
+    );
   }
 
   const configRegistered = await PluginManager.registerConfigButton();
   if (!configRegistered) {
-    console.error('Today config-button registration failed');
+    throw new Error(
+      'Today config-button registration failed. Check Plugin Preview firmware.',
+    );
   }
 
   PluginManager.registerButtonListener({
     onButtonPress(event) {
       if (event.id === TODAY_TOOLBAR_BUTTON_ID) {
-        publishEntryIntent('opening');
+        todayController.openToday();
       }
     },
   });
 
   PluginManager.registerConfigButtonListener({
     onClick() {
-      publishEntryIntent('settings');
-      PluginManager.showPluginView()
-        .then(shown => {
-          if (!shown) {
-            console.error('Today settings view did not open');
-          }
-        })
-        .catch(error => {
-          console.error('Today settings view failed to open', error);
-        });
+      todayController.showSettings();
     },
   });
 };
 
-initializePlugin().catch(error => {
-  console.error('Today plugin initialization failed', error);
-});
+initializePlugin().catch(todayController.failInitialization);

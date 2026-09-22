@@ -23,9 +23,7 @@ export function SettingsScreen({
   onClose,
 }: SettingsScreenProps): React.JSX.Element {
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      style={styles.container}>
+    <ScrollView contentContainerStyle={styles.content} style={styles.container}>
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>SUPERNOTE TODAY</Text>
@@ -38,8 +36,8 @@ export function SettingsScreen({
         <Text style={styles.label}>Journal location</Text>
         <Text style={styles.value}>{journalRoot}</Text>
         <Text style={styles.help}>
-          Notes use the filename YYYY-MM-DD.note. v0.1 keeps this location
-          fixed so the plugin remains TypeScript-only.
+          Notes use the filename YYYY-MM-DD.note. v0.2 keeps this location fixed
+          so the plugin remains TypeScript-only.
         </Text>
       </View>
 
@@ -70,8 +68,10 @@ export function SettingsScreen({
       </View>
 
       <View style={styles.panel}>
-        <Text style={styles.label}>v0.1 scope</Text>
+        <Text style={styles.label}>v0.2: static template, native ink</Text>
         <Text style={styles.help}>
+          The PNG supplies the plan and ruled areas. Four native text boxes
+          supply the date and lesson. The dated note archive is the history.
           Explicit practice progress, reset/start controls, and configurable
           roots require a documented TypeScript storage API and are deferred.
           Native note content remains the source of truth.

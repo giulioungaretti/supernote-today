@@ -4,8 +4,8 @@
   "pluginID": "sntodayjournal01",
   "iconPath": "assets/icon.png",
   "desc": "Open today's native journal and continue a progressive cursive practice.",
-  "versionCode": "2",
-  "versionName": "0.1.1",
+  "versionCode": "3",
+  "versionName": "0.2.0",
   "jsMainPath": "index",
   "uses-permissions": [
     "plugin.permission.FILE:READ",
