@@ -1,0 +1,79 @@
+name: Build Supernote plugin
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Validate and package
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Configure Microsoft npm proxy
+        shell: pwsh
+        run: |
+          npm config set registry https://packagefeedproxy.microsoft.io/npm/
+          if ((npm config get registry).Trim() -ne "https://packagefeedproxy.microsoft.io/npm/") {
+            throw "npm registry was not configured to use the Microsoft proxy"
+          }
+
+      - name: Restore dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint -- --no-cache
+
+      - name: Test
+        run: npm test -- --runInBand
+
+      - name: Verify shared PNG templates
+        run: npm run templates:check
+
+      - name: Build device preview
+        run: npm run preview:build
+
+      - name: Build plugin package
+        shell: pwsh
+        run: |
+          & .\buildPlugin.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Plugin packaging failed"
+          }
+
+      - name: Verify installable package and template pixels
+        shell: pwsh
+        run: |
+          & .\scripts\verifyPlugin.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Plugin package verification failed"
+          }
+
+      - name: Upload installable plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: supernote-today-snplg
+          path: |
+            build/outputs/SupernoteToday.snplg
+            build/outputs/SupernoteToday.snplg.sha256
+          if-no-files-found: error
+          retention-days: 30
